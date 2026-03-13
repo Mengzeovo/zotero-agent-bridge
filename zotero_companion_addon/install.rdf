@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<RDF xmlns="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+     xmlns:em="http://www.mozilla.org/2004/em-rdf#">
+  <Description about="urn:mozilla:install-manifest">
+    <em:id>zotero-agent-bridge@local</em:id>
+    <em:name>Zotero Agent Bridge</em:name>
+    <em:version>0.1.2</em:version>
+    <em:type>2</em:type>
+    <em:bootstrap>true</em:bootstrap>
+    <em:description>Companion add-on that executes bridge write commands inside Zotero.</em:description>
+    <em:targetApplication>
+      <Description>
+        <em:id>zotero@zotero.org</em:id>
+        <em:minVersion>7.0</em:minVersion>
+        <em:maxVersion>8.0.*</em:maxVersion>
+      </Description>
+    </em:targetApplication>
+  </Description>
+</RDF>
+
