@@ -1,0 +1,15 @@
+﻿{
+  "manifest_version": 2,
+  "name": "Zotero Agent Bridge",
+  "version": "0.1.2",
+  "description": "Companion add-on that executes bridge write commands inside Zotero.",
+  "applications": {
+    "zotero": {
+      "id": "zotero-agent-bridge@local",
+      "update_url": "https://example.com/zotero-agent-bridge/updates.json",
+      "strict_min_version": "7.0",
+      "strict_max_version": "8.0.*"
+    }
+  }
+}
+
