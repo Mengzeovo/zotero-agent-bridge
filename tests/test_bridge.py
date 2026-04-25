@@ -14,7 +14,7 @@ import requests
 import uvicorn
 
 from zotero_agent_bridge.collection_tree import apply_default_collection_tree
-from zotero_agent_bridge.config import Settings
+from zotero_agent_bridge.config import ObsidianSettings, Settings
 from zotero_agent_bridge.errors import BridgeError
 from zotero_agent_bridge.mcp_server import BridgeHttpClient, ZoteroBridgeMCPServer
 from zotero_agent_bridge.mirror import MirrorStore
@@ -379,6 +379,8 @@ class BridgeTestCase(unittest.TestCase):
         self.root.mkdir(parents=True, exist_ok=True)
         self.sample_pdf = self.root / "sample.pdf"
         self.sample_pdf.write_bytes(b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n")
+        self.obsidian_vault = self.root / "obsidian-vault"
+        self.obsidian_vault.mkdir(parents=True, exist_ok=True)
         self.raise_doi_lookup = False
         self.pdf_metadata_return: dict[str, str] = {"title": "PDF Imported Title", "doi": "10.2000/pdf"}
 
@@ -394,6 +396,13 @@ class BridgeTestCase(unittest.TestCase):
             addon_status_ttl_seconds=60.0,
             user_agent="ZoteroAgentBridgeTest/0.1",
             base_attachment_path=None,
+            obsidian=ObsidianSettings(
+                vault_name="TestVault",
+                vault_path=self.obsidian_vault,
+                default_note_dir="Zotero Notes",
+                index_path=self.root / "metadata" / "obsidian-index.json",
+                bridge_open_base_url=None,
+            ),
         )
         self.settings.prepare_runtime()
 
@@ -418,6 +427,10 @@ class BridgeTestCase(unittest.TestCase):
         self.session.close()
         self.server.stop()
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_prepare_runtime_persists_static_token_for_addon(self) -> None:
+        generated = json.loads(self.settings.generated_config_path.read_text(encoding="utf-8"))
+        self.assertEqual(generated["api_token"], self.settings.api_token)
 
     def request(self, method: str, path: str, **kwargs):
         return self.session.request(method, f"{self.base_url}{path}", timeout=5, **kwargs)
@@ -514,6 +527,183 @@ class BridgeTestCase(unittest.TestCase):
         note_path = Path(index["notes"][note_key]["markdown_path"])
         self.assertTrue(note_path.exists())
         self.assertIn("# Summary", note_path.read_text(encoding="utf-8"))
+
+    def test_prepare_obsidian_sync_uses_note_title_and_frontmatter(self) -> None:
+        created = self.create_manual_item("Obsidian Source")
+        item_key = str(created["item_key"])
+        noted = self.request(
+            "POST",
+            f"/items/{item_key}/notes",
+            headers=self.headers,
+            json={"title": "Reading Note", "markdown": "Important result."},
+        )
+        self.assertEqual(noted.status_code, 200)
+        note_key = noted.json()["note_key"]
+
+        prepared = self.request(
+            "POST",
+            "/obsidian/notes/prepare-sync",
+            headers=self.headers,
+            json={"item_key": item_key, "note_key": note_key, "note_title": "Reading Note"},
+        )
+        self.assertEqual(prepared.status_code, 200)
+        payload = prepared.json()
+        self.assertEqual(payload["filename"], "Reading Note.md")
+        self.assertEqual(payload["vault_relative_path"], "Zotero Notes/Reading Note.md")
+        self.assertEqual(payload["frontmatter"]["zotero_item_key"], item_key)
+        self.assertEqual(payload["frontmatter"]["zotero_note_key"], note_key)
+        self.assertEqual(payload["frontmatter"]["zab_stable_id"], f"zotero-note-{note_key}")
+        self.assertIn("/obsidian/open/", payload["resolver_url"])
+
+    def test_prepare_obsidian_sync_appends_note_key_when_name_conflicts(self) -> None:
+        existing = self.obsidian_vault / "Zotero Notes" / "Reading Note.md"
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_text("existing", encoding="utf-8")
+        created = self.create_manual_item("Obsidian Conflict Source")
+        item_key = str(created["item_key"])
+        noted = self.request(
+            "POST",
+            f"/items/{item_key}/notes",
+            headers=self.headers,
+            json={"title": "Conflict", "markdown": "Body"},
+        )
+        self.assertEqual(noted.status_code, 200)
+        note_key = noted.json()["note_key"]
+
+        prepared = self.request(
+            "POST",
+            "/obsidian/notes/prepare-sync",
+            headers=self.headers,
+            json={"item_key": item_key, "note_key": note_key, "note_title": "Reading Note"},
+        )
+        self.assertEqual(prepared.status_code, 200)
+        self.assertEqual(prepared.json()["filename"], f"Reading Note - {note_key}.md")
+
+    def test_obsidian_sync_status_updates_mirror_index(self) -> None:
+        created = self.create_manual_item("Obsidian Status Source")
+        item_key = str(created["item_key"])
+        noted = self.request(
+            "POST",
+            f"/items/{item_key}/notes",
+            headers=self.headers,
+            json={"title": "Status Note", "markdown": "Body"},
+        )
+        note_key = noted.json()["note_key"]
+        prepared = self.request(
+            "POST",
+            "/obsidian/notes/prepare-sync",
+            headers=self.headers,
+            json={"item_key": item_key, "note_key": note_key, "note_title": "Status Note"},
+        ).json()
+
+        status = self.request(
+            "POST",
+            f"/obsidian/notes/{note_key}/sync-status",
+            headers=self.headers,
+            json={
+                "item_key": item_key,
+                "stable_id": prepared["stable_id"],
+                "status": "synced",
+                "markdown_path": prepared["markdown_path"],
+                "vault_relative_path": prepared["vault_relative_path"],
+            },
+        )
+        self.assertEqual(status.status_code, 200)
+        index = json.loads((self.settings.metadata_dir / "index.json").read_text(encoding="utf-8"))
+        obsidian = index["notes"][note_key]["obsidian"]
+        self.assertEqual(obsidian["better_notes_sync_status"], "synced")
+        self.assertEqual(obsidian["last_known_relative_path"], prepared["vault_relative_path"])
+
+    def test_obsidian_sync_status_rejects_paths_outside_vault(self) -> None:
+        created = self.create_manual_item("Obsidian Path Source")
+        item_key = str(created["item_key"])
+        noted = self.request(
+            "POST",
+            f"/items/{item_key}/notes",
+            headers=self.headers,
+            json={"title": "Path Note", "markdown": "Body"},
+        )
+        note_key = noted.json()["note_key"]
+        prepared = self.request(
+            "POST",
+            "/obsidian/notes/prepare-sync",
+            headers=self.headers,
+            json={"item_key": item_key, "note_key": note_key, "note_title": "Path Note"},
+        ).json()
+
+        status = self.request(
+            "POST",
+            f"/obsidian/notes/{note_key}/sync-status",
+            headers=self.headers,
+            json={
+                "item_key": item_key,
+                "stable_id": prepared["stable_id"],
+                "status": "synced",
+                "vault_relative_path": "../outside.md",
+            },
+        )
+        self.assertEqual(status.status_code, 422)
+        self.assertEqual(status.json()["error"]["code"], "path_outside_obsidian_vault")
+
+    def test_obsidian_resolver_repairs_moved_file_by_stable_id(self) -> None:
+        created = self.create_manual_item("Obsidian Move Source")
+        item_key = str(created["item_key"])
+        noted = self.request(
+            "POST",
+            f"/items/{item_key}/notes",
+            headers=self.headers,
+            json={"title": "Move Note", "markdown": "Body"},
+        )
+        note_key = noted.json()["note_key"]
+        prepared = self.request(
+            "POST",
+            "/obsidian/notes/prepare-sync",
+            headers=self.headers,
+            json={"item_key": item_key, "note_key": note_key, "note_title": "Move Note"},
+        ).json()
+        original = Path(prepared["markdown_path"])
+        original.write_text(
+            "\n".join(
+                [
+                    "---",
+                    f"zotero_item_key: {item_key}",
+                    f"zotero_note_key: {note_key}",
+                    f"zab_stable_id: {prepared['stable_id']}",
+                    "---",
+                    "Moved content",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        moved = self.obsidian_vault / "Moved" / "Move Note.md"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        original.replace(moved)
+
+        opened = self.request(
+            "GET",
+            f"/obsidian/open/{prepared['stable_id']}",
+            params={"token": prepared["link_token"]},
+            allow_redirects=False,
+        )
+        self.assertEqual(opened.status_code, 302)
+        self.assertIn("obsidian://open", opened.headers["location"])
+        self.assertIn("Moved%2FMove%20Note", opened.headers["location"])
+
+    def test_obsidian_reindex_scans_frontmatter(self) -> None:
+        md_path = self.obsidian_vault / "Manual" / "Manual Note.md"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(
+            "---\nzotero_item_key: I0001\nzotero_note_key: N0001\nzab_stable_id: zotero-note-N0001\n---\nBody",
+            encoding="utf-8",
+        )
+        reindexed = self.request(
+            "POST",
+            "/obsidian/reindex",
+            headers=self.headers,
+            json={"limit": 100},
+        )
+        self.assertEqual(reindexed.status_code, 200)
+        self.assertEqual(reindexed.json()["indexed"], 1)
 
     def test_create_from_pdf_marks_needs_review_and_dedupes_by_checksum(self) -> None:
         self.raise_doi_lookup = True

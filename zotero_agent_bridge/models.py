@@ -99,6 +99,40 @@ class SyncExportRequest(BaseModel):
     include_notes: bool = True
 
 
+class PrepareObsidianNoteSyncRequest(BaseModel):
+    item_key: str
+    note_key: str
+    note_title: str
+
+
+class ObsidianSyncStatusRequest(BaseModel):
+    item_key: str
+    stable_id: str
+    status: str
+    markdown_path: str | None = None
+    vault_relative_path: str | None = None
+    error: str | None = None
+
+
+class ObsidianReindexRequest(BaseModel):
+    limit: int = 5000
+
+
+class ObsidianNoteSyncPrepared(BaseModel):
+    item_key: str
+    note_key: str
+    note_title: str
+    stable_id: str
+    link_token: str
+    markdown_path: str
+    vault_relative_path: str
+    sync_dir: str
+    filename: str
+    vault_name: str
+    resolver_url: str
+    frontmatter: dict[str, Any]
+
+
 class StableWriteResponse(BaseModel):
     library_id: int | None = None
     item_key: str | None = None

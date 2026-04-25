@@ -1,5 +1,8 @@
 {
   "bridgeHome": "",
+  "bridgeHost": "127.0.0.1",
+  "bridgePort": 8765,
+  "apiToken": "",
   "pollIntervalMs": 1000,
   "statusIntervalMs": 5000
 }

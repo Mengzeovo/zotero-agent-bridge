@@ -5,14 +5,29 @@ from typing import Any
 
 import markdown as markdown_lib
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from .addon_client import AddonClient
 from .config import Settings
 from .doi import fetch_doi_metadata
 from .errors import BridgeError
 from .mirror import MirrorStore
-from .models import AttachLinkedPdfRequest, CollectionRecord, CreateCollectionRequest, CreateItemRequest, CreateNoteRequest, StableWriteResponse, SyncExportRequest, UpdateCollectionRequest, UpdateItemRequest
+from .models import (
+    AttachLinkedPdfRequest,
+    CollectionRecord,
+    CreateCollectionRequest,
+    CreateItemRequest,
+    CreateNoteRequest,
+    ObsidianNoteSyncPrepared,
+    ObsidianReindexRequest,
+    ObsidianSyncStatusRequest,
+    PrepareObsidianNoteSyncRequest,
+    StableWriteResponse,
+    SyncExportRequest,
+    UpdateCollectionRequest,
+    UpdateItemRequest,
+)
+from .obsidian import ObsidianBridge
 from .pdf_tools import extract_pdf_metadata
 from .utils import guess_content_type, normalize_doi, now_iso, sha256_file
 from .write_queue import SerialWriteExecutor
@@ -50,6 +65,7 @@ class BridgeService:
         )
         self.doi_resolver = doi_resolver
         self.pdf_metadata_extractor = pdf_metadata_extractor
+        self.obsidian = ObsidianBridge(settings, self.mirror)
 
     def health(self) -> dict[str, Any]:
         return {
@@ -453,6 +469,18 @@ class BridgeService:
                     break
         return {"exported": len(exported), "item_keys": exported}
 
+    def prepare_obsidian_note_sync(self, request: PrepareObsidianNoteSyncRequest) -> ObsidianNoteSyncPrepared:
+        return self.obsidian.prepare_sync(request)
+
+    def update_obsidian_note_sync_status(self, note_key: str, request: ObsidianSyncStatusRequest) -> dict[str, Any]:
+        return self.obsidian.update_sync_status(note_key, request)
+
+    def reindex_obsidian(self, request: ObsidianReindexRequest) -> dict[str, Any]:
+        return self.obsidian.reindex(request)
+
+    def obsidian_open_uri(self, stable_id: str, token: str) -> str:
+        return self.obsidian.open_uri(stable_id, token)
+
 
 def build_service(settings: Settings | None = None) -> BridgeService:
     return BridgeService(settings or Settings.from_env())
@@ -531,6 +559,22 @@ def create_app(settings: Settings | None = None, service: BridgeService | None =
     @app.post("/sync/export", dependencies=[Depends(authorize)])
     def export_items(request: SyncExportRequest) -> dict[str, Any]:
         return service.export_items(request)
+
+    @app.post("/obsidian/notes/prepare-sync", dependencies=[Depends(authorize)])
+    def prepare_obsidian_note_sync(request: PrepareObsidianNoteSyncRequest) -> ObsidianNoteSyncPrepared:
+        return service.prepare_obsidian_note_sync(request)
+
+    @app.post("/obsidian/notes/{note_key}/sync-status", dependencies=[Depends(authorize)])
+    def update_obsidian_note_sync_status(note_key: str, request: ObsidianSyncStatusRequest) -> dict[str, Any]:
+        return service.update_obsidian_note_sync_status(note_key, request)
+
+    @app.post("/obsidian/reindex", dependencies=[Depends(authorize)])
+    def reindex_obsidian(request: ObsidianReindexRequest) -> dict[str, Any]:
+        return service.reindex_obsidian(request)
+
+    @app.get("/obsidian/open/{stable_id}")
+    def open_obsidian(stable_id: str, token: str = Query(..., min_length=1)) -> RedirectResponse:
+        return RedirectResponse(service.obsidian_open_uri(stable_id, token), status_code=302)
 
     return app
 
