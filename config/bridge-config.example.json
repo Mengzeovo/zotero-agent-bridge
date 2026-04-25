@@ -6,6 +6,13 @@
   "metadata_dir": "./mirror/metadata",
   "notes_dir": "./mirror/notes",
   "base_attachment_path": "E:/papers",
+  "obsidian": {
+    "vault_name": "ResearchVault",
+    "vault_path": "E:/Obsidian/ResearchVault",
+    "default_note_dir": "Zotero Notes",
+    "index_path": "./mirror/metadata/obsidian-index.json",
+    "bridge_open_base_url": "http://127.0.0.1:8765"
+  },
   "addon_timeout_seconds": 30.0,
   "addon_status_ttl_seconds": 15.0,
   "user_agent": "ZoteroAgentBridge/0.1"

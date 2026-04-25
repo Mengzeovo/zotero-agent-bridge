@@ -28,6 +28,15 @@ def _load_config_file() -> dict[str, Any]:
 
 
 @dataclass(slots=True)
+class ObsidianSettings:
+    vault_name: str | None = None
+    vault_path: Path | None = None
+    default_note_dir: str = "Zotero Notes"
+    index_path: Path | None = None
+    bridge_open_base_url: str | None = None
+
+
+@dataclass(slots=True)
 class Settings:
     host: str
     port: int
@@ -40,10 +49,12 @@ class Settings:
     addon_status_ttl_seconds: float
     user_agent: str
     base_attachment_path: Path | None = None
+    obsidian: ObsidianSettings | None = None
 
     @classmethod
     def from_env(cls) -> "Settings":
         config = _load_config_file()
+        obsidian_config = config.get("obsidian") or {}
         data_dir = Path(
             os.environ.get("ZOTERO_DATA_DIR")
             or config.get("zotero_data_dir")
@@ -67,6 +78,14 @@ class Settings:
         base_attachment = (
             os.environ.get("ZOTERO_AGENT_BRIDGE_BASE_ATTACHMENT_PATH")
             or config.get("base_attachment_path")
+        )
+        obsidian_vault_path = (
+            os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_VAULT_PATH")
+            or obsidian_config.get("vault_path")
+        )
+        obsidian_index_path = (
+            os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_INDEX_PATH")
+            or obsidian_config.get("index_path")
         )
         settings = cls(
             host=os.environ.get("ZOTERO_AGENT_BRIDGE_HOST") or config.get("host") or "127.0.0.1",
@@ -92,6 +111,23 @@ class Settings:
             ),
             user_agent=config.get("user_agent") or "ZoteroAgentBridge/0.1",
             base_attachment_path=Path(base_attachment) if base_attachment else None,
+            obsidian=ObsidianSettings(
+                vault_name=(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_VAULT_NAME")
+                    or obsidian_config.get("vault_name")
+                ),
+                vault_path=Path(obsidian_vault_path) if obsidian_vault_path else None,
+                default_note_dir=(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_DEFAULT_NOTE_DIR")
+                    or obsidian_config.get("default_note_dir")
+                    or "Zotero Notes"
+                ),
+                index_path=Path(obsidian_index_path) if obsidian_index_path else None,
+                bridge_open_base_url=(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_BRIDGE_OPEN_BASE_URL")
+                    or obsidian_config.get("bridge_open_base_url")
+                ),
+            ),
         )
         settings.prepare_runtime()
         return settings
@@ -129,6 +165,8 @@ class Settings:
         return self.bridge_home / "bridge.generated.json"
 
     def prepare_runtime(self) -> None:
+        if self.obsidian and self.obsidian.index_path is None:
+            self.obsidian.index_path = self.metadata_dir / "obsidian-index.json"
         for directory in [
             self.bridge_home,
             self.commands_dir,
@@ -140,6 +178,8 @@ class Settings:
             self.notes_dir,
         ]:
             ensure_dir(directory)
+        if self.obsidian and self.obsidian.index_path:
+            ensure_dir(self.obsidian.index_path.parent)
         if not self.api_token:
             persisted = read_json(self.generated_config_path, default={})
             token = persisted.get("api_token")
@@ -150,3 +190,10 @@ class Settings:
                     encoding="utf-8",
                 )
             self.api_token = token
+        else:
+            persisted = read_json(self.generated_config_path, default={})
+            if persisted.get("api_token") != self.api_token:
+                self.generated_config_path.write_text(
+                    json.dumps({"api_token": self.api_token}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
