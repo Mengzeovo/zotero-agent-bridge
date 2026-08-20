@@ -1,7 +1,7 @@
 ﻿/**
  * Zotero Agent Bridge companion add-on bootstrap.
  *
- * Compatible with Zotero 7/8 bootstrapped add-ons.
+ * Compatible with Zotero 7/8/9 bootstrapped add-ons.
  */
 
 function install(data, reason) {}
@@ -28,11 +28,13 @@ async function writeBootstrapLog(message, details) {
 }
 
 function buildZoteroAgentBridge(rootURI) {
-  const ADDON_VERSION = "0.1.3";
+  const ADDON_VERSION = "0.3.3";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const DEFAULT_BRIDGE_HOST = "127.0.0.1";
   const DEFAULT_BRIDGE_PORT = 8765;
+  const DEFAULT_BRIDGE_STARTUP_TIMEOUT_MS = 15000;
+  const DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS = 5000;
   const ROOT_CONFIG_PATH = `${rootURI}config/default-config.json`;
 
   let state = null;
@@ -64,7 +66,21 @@ function buildZoteroAgentBridge(rootURI) {
       statusTimer: null,
       pollTimer: null,
       shuttingDown: false,
-      menuItems: [],
+      menuItems: new Map(),
+      chatPanel: null,
+      bridgeState: "starting",
+      bridgeOwnership: "none",
+      bridgeOwnerId: null,
+      bridgeOwnerToken: null,
+      bridgeLastError: null,
+      bridgeStartPromise: null,
+      bridgeProcess: null,
+      bridgeBundleState: "pending",
+      bridgeBundleInfo: null,
+      bridgeBundleManager: null,
+      bridgeConfigManager: null,
+      bridgeManagedConfig: null,
+      quitObserver: null,
     };
   }
 
@@ -73,7 +89,13 @@ function buildZoteroAgentBridge(rootURI) {
       bridgeHome: "",
       bridgeHost: DEFAULT_BRIDGE_HOST,
       bridgePort: DEFAULT_BRIDGE_PORT,
+      zoteroLocalApiBase: "http://127.0.0.1:23119/api/users/0",
       apiToken: "",
+      autoStartBridge: true,
+      stopOwnedBridgeOnShutdown: true,
+      bridgeStartupTimeoutMs: DEFAULT_BRIDGE_STARTUP_TIMEOUT_MS,
+      bridgeRequestTimeoutMs: DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS,
+      bridgeLauncherFile: "bridge-launcher.json",
       pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
       statusIntervalMs: DEFAULT_STATUS_INTERVAL_MS,
     };
@@ -146,18 +168,44 @@ function buildZoteroAgentBridge(rootURI) {
     return `http://${state.config.bridgeHost || DEFAULT_BRIDGE_HOST}:${state.config.bridgePort || DEFAULT_BRIDGE_PORT}`;
   }
 
-  async function bridgeRequest(method, path, payload = null) {
+  function delay(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  function newOwnerValue() {
+    return Services.uuid.generateUUID().toString().replace(/[{}-]/g, "");
+  }
+
+  async function rawBridgeRequest(method, path, payload = null, options = {}) {
     const token = await readBridgeToken();
-    const response = await fetch(`${bridgeBaseURL()}${path}`, {
-      method,
-      headers: {
+    const timeoutMs = Math.max(500, Number(options.timeoutMs || state.config.bridgeRequestTimeoutMs));
+    let response;
+    try {
+      const headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "X-Bridge-Token": token,
-      },
-      body: payload ? JSON.stringify(payload) : undefined,
-    });
-    const text = await response.text();
+      };
+      if (options.ownerToken) {
+        headers["X-Bridge-Owner-Token"] = options.ownerToken;
+      }
+      response = await Zotero.HTTP.request(method, `${bridgeBaseURL()}${path}`, {
+        headers,
+        body: payload ? JSON.stringify(payload) : undefined,
+        responseType: "text",
+        successCodes: false,
+        timeout: timeoutMs,
+        errorDelayIntervals: [],
+        errorDelayMax: 0,
+      });
+    } catch (error) {
+      throw new BridgeError(
+        "bridge_unreachable",
+        `Bridge is not responding at ${bridgeBaseURL()}`,
+        serializeError(error),
+      );
+    }
+    const text = typeof response.responseText === "string" ? response.responseText : "";
     let data = null;
     if (text) {
       try {
@@ -166,7 +214,7 @@ function buildZoteroAgentBridge(rootURI) {
         data = { raw: text };
       }
     }
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       const error = data && data.error ? data.error : {};
       throw new BridgeError(
         error.code || "bridge_http_error",
@@ -175,6 +223,504 @@ function buildZoteroAgentBridge(rootURI) {
       );
     }
     return data;
+  }
+
+  async function checkBridgeHealth() {
+    let lifecycleError = null;
+    try {
+      const lifecycle = await rawBridgeRequest("GET", "/lifecycle", null, { timeoutMs: 2000 });
+      return { lifecycle };
+    } catch (error) {
+      lifecycleError = serializeError(error);
+      try {
+        return await rawBridgeRequest("GET", "/health", null, { timeoutMs: 3000 });
+      } catch (fallbackError) {
+        state.bridgeLastError = {
+          code: "bridge_health_check_failed",
+          message: "Bridge lifecycle and health checks both failed",
+          details: {
+            lifecycle: lifecycleError,
+            health: serializeError(fallbackError),
+          },
+        };
+        return null;
+      }
+    }
+  }
+
+  function classifyLifecycle(lifecycle, { bundled = false } = {}) {
+    if (!lifecycle || typeof lifecycle !== "object") {
+      throw new BridgeError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
+    }
+    if (lifecycle.protocol_version === undefined || lifecycle.protocol_version === null) {
+      if (bundled) {
+        throw new BridgeError("bridge_protocol_incompatible", "Bundled Bridge did not report a lifecycle protocol version");
+      }
+      return { compatible: true, legacy: true, protocolVersion: 0, distribution: "legacy-python" };
+    }
+    if (!Number.isInteger(Number(lifecycle.pid))) {
+      throw new BridgeError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
+    }
+    const protocolVersion = Number(lifecycle.protocol_version);
+    const distribution = String(lifecycle.distribution || "");
+    const bridgeVersion = String(lifecycle.bridge_version || "");
+    if (protocolVersion !== 1 || !bridgeVersion || !["xpi-bundled", "source"].includes(distribution)) {
+      throw new BridgeError("bridge_protocol_incompatible", "Bridge lifecycle protocol or distribution is unsupported", {
+        protocol_version: lifecycle.protocol_version,
+        bridge_version: lifecycle.bridge_version,
+        distribution: lifecycle.distribution,
+      });
+    }
+    if (bundled && (
+      distribution !== "xpi-bundled"
+      || bridgeVersion !== state.bridgeBundleInfo?.manifest?.bridge_version
+    )) {
+      throw new BridgeError("bridge_bundle_runtime_mismatch", "Running Bridge does not match the installed Bundle", {
+        expected_version: state.bridgeBundleInfo?.manifest?.bridge_version,
+        actual_version: bridgeVersion,
+        distribution,
+      });
+    }
+    return { compatible: true, legacy: false, protocolVersion, distribution, bridgeVersion };
+  }
+
+  async function writeRuntimeLocator(lifecycle) {
+    if (!state.bridgeBundleInfo || !state.bridgeManagedConfig?.configPath) {
+      return;
+    }
+    const path = PathUtils.join(state.bridgeHome, "bridge-runtime.json");
+    const temporary = `${path}.tmp-${newOwnerValue()}`;
+    await IOUtils.writeUTF8(temporary, JSON.stringify({
+      runtime_schema_version: 1,
+      bridge_version: lifecycle.bridge_version,
+      protocol_version: lifecycle.protocol_version,
+      distribution: lifecycle.distribution,
+      executable: state.bridgeBundleInfo.executable,
+      config_path: state.bridgeManagedConfig.configPath,
+      manifest_sha256: state.bridgeBundleInfo.manifestSha256,
+      updated_at: new Date().toISOString(),
+    }, null, 2));
+    await IOUtils.move(temporary, path, { noOverwrite: false });
+  }
+
+  function validateLauncherDescriptor(descriptor) {
+    if (!descriptor || descriptor.schema_version !== 1 || descriptor.platform !== "windows") {
+      throw new BridgeError("bridge_launcher_invalid", "Bridge launcher descriptor is invalid or unsupported");
+    }
+    if (!descriptor.command || !PathUtils.isAbsolute(String(descriptor.command))) {
+      throw new BridgeError("bridge_launcher_invalid", "Bridge launcher command must be an absolute path");
+    }
+    if (!Array.isArray(descriptor.arguments) || descriptor.arguments.some((value) => typeof value !== "string")) {
+      throw new BridgeError("bridge_launcher_invalid", "Bridge launcher arguments are invalid");
+    }
+    if (!descriptor.workdir || !PathUtils.isAbsolute(String(descriptor.workdir))) {
+      throw new BridgeError("bridge_launcher_invalid", "Bridge launcher working directory must be absolute");
+    }
+    if (!descriptor.owner_arguments || !descriptor.owner_arguments.id || !descriptor.owner_arguments.token) {
+      throw new BridgeError("bridge_launcher_invalid", "Bridge launcher owner arguments are missing");
+    }
+    return descriptor;
+  }
+
+  async function readProcessPipe(pipe) {
+    if (!pipe || typeof pipe.readString !== "function") {
+      return "";
+    }
+    let output = "";
+    let chunk;
+    while ((chunk = await pipe.readString())) {
+      output += chunk;
+    }
+    return output;
+  }
+
+  async function monitorBridgeProcess(process, ownerId) {
+    const stdoutPromise = readProcessPipe(process.stdout);
+    const stderrPromise = readProcessPipe(process.stderr);
+    const result = await process.wait();
+    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+    if (state && state.bridgeProcess === process) {
+      state.bridgeProcess = null;
+      if (!state.shuttingDown && state.bridgeOwnerId === ownerId) {
+        state.bridgeState = "unavailable";
+        state.bridgeOwnership = "none";
+        state.bridgeOwnerId = null;
+        state.bridgeOwnerToken = null;
+        state.bridgeLastError = {
+          code: "bridge_process_exited",
+          message: `Bundled Bridge exited with code ${result.exitCode}`,
+          details: {
+            exit_code: result.exitCode,
+            stdout: stdout.trim() || null,
+            stderr: stderr.trim() || null,
+          },
+        };
+        await appendLog("error", "bundled_bridge_exited", state.bridgeLastError);
+        try {
+          await writeStatus();
+        } catch (error) {}
+      }
+    }
+  }
+
+  async function launchBridge(ownerId, ownerToken) {
+    if (!["ready", "rollback"].includes(state.bridgeBundleState) || !state.bridgeBundleInfo?.executable) {
+      if (state.bridgeLastError?.code) {
+        throw new BridgeError(
+          state.bridgeLastError.code,
+          state.bridgeLastError.message || "The bundled Bridge executable is unavailable",
+          state.bridgeLastError.details || null,
+        );
+      }
+      throw new BridgeError("bridge_bundle_unavailable", "The bundled Bridge executable is unavailable");
+    }
+    if (!state.bridgeManagedConfig?.configPath) {
+      throw new BridgeError("bridge_config_unavailable", "The managed Bridge configuration is unavailable", state.bridgeManagedConfig?.error || null);
+    }
+    const { Subprocess } = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+    const process = await Subprocess.call({
+      command: state.bridgeBundleInfo.executable,
+      arguments: [],
+      workdir: state.bridgeBundleInfo.versionRoot,
+      environmentAppend: true,
+      environment: {
+        ZOTERO_AGENT_BRIDGE_CONFIG: state.bridgeManagedConfig.configPath,
+        ZOTERO_AGENT_BRIDGE_OWNER_ID: ownerId,
+        ZOTERO_AGENT_BRIDGE_OWNER_TOKEN: ownerToken,
+        ZOTERO_AGENT_BRIDGE_HOME_FOR_LOGS: state.bridgeHome,
+        ZOTERO_AGENT_BRIDGE_DISTRIBUTION: "xpi-bundled",
+        PYTHONUTF8: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    state.bridgeProcess = process;
+    void monitorBridgeProcess(process, ownerId);
+    await appendLog("info", "bundled_bridge_launched", {
+      pid: process.pid,
+      owner_id: ownerId,
+      executable: state.bridgeBundleInfo.executable,
+      bridge_version: state.bridgeBundleInfo.manifest.bridge_version,
+    });
+  }
+
+  async function startBundleAndWait(bundleInfo, { rollbackFrom = null } = {}) {
+    state.bridgeBundleInfo = bundleInfo;
+    state.bridgeState = "starting";
+    const ownerId = newOwnerValue();
+    const ownerToken = `${newOwnerValue()}${newOwnerValue()}`;
+    state.bridgeOwnerId = ownerId;
+    state.bridgeOwnerToken = ownerToken;
+    await launchBridge(ownerId, ownerToken);
+
+    const deadline = Date.now() + Math.max(1000, Number(state.config.bridgeStartupTimeoutMs));
+    while (Date.now() < deadline) {
+      const health = await checkBridgeHealth();
+      if (health) {
+        const lifecycle = health.lifecycle || health;
+        classifyLifecycle(lifecycle, { bundled: true });
+        const owned = Boolean(lifecycle.managed && lifecycle.owner_id === ownerId);
+        if (!owned) {
+          throw new BridgeError("bridge_owner_mismatch", "Bundled Bridge started without the expected owner identity", {
+            expected_owner_id: ownerId,
+            actual_owner_id: lifecycle.owner_id || null,
+          });
+        }
+        state.bridgeState = "ready";
+        state.bridgeOwnership = "owned";
+        state.bridgeOwnerId = ownerId;
+        state.bridgeOwnerToken = ownerToken;
+        state.bridgeLastError = rollbackFrom
+          ? {
+              code: "bridge_bundle_rollback_active",
+              message: `Bridge ${rollbackFrom} failed; running last-known-good ${lifecycle.bridge_version}`,
+              details: { failed_version: rollbackFrom, rollback_version: lifecycle.bridge_version },
+            }
+          : null;
+        await state.bridgeBundleManager.markLaunchSucceeded(bundleInfo);
+        await writeRuntimeLocator(lifecycle);
+        await appendLog(rollbackFrom ? "warning" : "info", rollbackFrom ? "bridge_rollback_ready" : "bridge_ready", {
+          ownership: state.bridgeOwnership,
+          owner_id: state.bridgeOwnerId,
+          bridge_version: lifecycle.bridge_version,
+          protocol_version: lifecycle.protocol_version,
+          distribution: lifecycle.distribution,
+          rollback_from: rollbackFrom,
+        });
+        return health;
+      }
+      await delay(250);
+    }
+    throw new BridgeError(
+      "bridge_start_timeout",
+      `Bridge did not become ready within ${state.config.bridgeStartupTimeoutMs} ms`,
+      state.bridgeLastError,
+    );
+  }
+
+  async function stopFailedBundleProcess() {
+    const process = state.bridgeProcess;
+    if (!process || (process.exitCode !== null && process.exitCode !== undefined)) {
+      return;
+    }
+    try {
+      await process.kill(0);
+    } catch (error) {}
+    if (state.bridgeProcess === process) {
+      state.bridgeProcess = null;
+    }
+  }
+
+  async function ensureBridgeAvailable({ force = false } = {}) {
+    if (!state || state.shuttingDown) {
+      throw new BridgeError("bridge_unavailable", "Bridge cannot start while the add-on is shutting down");
+    }
+    if (state.bridgeStartPromise) {
+      return state.bridgeStartPromise;
+    }
+    state.bridgeStartPromise = (async () => {
+      const bundleInstallError = state.bridgeBundleState === "error" ? state.bridgeLastError : null;
+      const existing = await checkBridgeHealth();
+      if (existing) {
+        const lifecycle = existing.lifecycle || existing;
+        const compatibility = classifyLifecycle(lifecycle);
+        const stillOwned = Boolean(
+          lifecycle.managed
+          && state.bridgeOwnerId
+          && state.bridgeOwnerToken
+          && lifecycle.owner_id === state.bridgeOwnerId
+        );
+        state.bridgeState = "ready";
+        state.bridgeOwnership = stillOwned ? "owned" : "shared";
+        if (!stillOwned) {
+          state.bridgeOwnerId = null;
+          state.bridgeOwnerToken = null;
+        }
+        state.bridgeLastError = compatibility.legacy
+          ? {
+              code: "bridge_legacy_shared",
+              message: "Using a compatible legacy shared Bridge without protocol metadata",
+              details: null,
+            }
+          : null;
+        return existing;
+      }
+      if (bundleInstallError) {
+        state.bridgeLastError = bundleInstallError;
+      }
+      if (!state.config.autoStartBridge) {
+        throw new BridgeError("bridge_autostart_disabled", "Bridge automatic startup is disabled");
+      }
+
+      const primaryBundle = state.bridgeBundleInfo;
+      if (!primaryBundle) {
+        if (state.bridgeLastError?.code) {
+          throw new BridgeError(
+            state.bridgeLastError.code,
+            state.bridgeLastError.message || "The bundled Bridge executable is unavailable",
+            state.bridgeLastError.details || null,
+          );
+        }
+        throw new BridgeError("bridge_bundle_unavailable", "The bundled Bridge executable is unavailable");
+      }
+      state.bridgeLastError = null;
+      try {
+        return await startBundleAndWait(primaryBundle);
+      } catch (error) {
+        if (!primaryBundle) {
+          throw error;
+        }
+        await state.bridgeBundleManager.recordLaunchFailure(primaryBundle, error);
+        await stopFailedBundleProcess();
+        const rollback = await state.bridgeBundleManager.rollbackCandidate(primaryBundle.manifest.bridge_version);
+        if (!rollback) {
+          throw error;
+        }
+        state.bridgeBundleState = "rollback";
+        await appendLog("warning", "bridge_bundle_rollback_attempt", {
+          failed_version: primaryBundle.manifest.bridge_version,
+          rollback_version: rollback.manifest.bridge_version,
+          error: serializeError(error),
+        });
+        return await startBundleAndWait(rollback, { rollbackFrom: primaryBundle.manifest.bridge_version });
+      }
+    })();
+
+    try {
+      return await state.bridgeStartPromise;
+    } catch (error) {
+      state.bridgeState = "unavailable";
+      state.bridgeOwnership = "none";
+      state.bridgeOwnerId = null;
+      state.bridgeOwnerToken = null;
+      state.bridgeLastError = serializeError(error);
+      await appendLog("error", "bridge_autostart_failed", state.bridgeLastError);
+      throw error;
+    } finally {
+      state.bridgeStartPromise = null;
+      try {
+        await writeStatus();
+      } catch (error) {}
+    }
+  }
+
+  async function bridgeRequest(method, path, payload = null) {
+    if (state.bridgeState !== "ready") {
+      await ensureBridgeAvailable();
+    }
+    try {
+      return await rawBridgeRequest(method, path, payload);
+    } catch (error) {
+      if (!(error instanceof BridgeError) || error.code !== "bridge_unreachable") {
+        throw error;
+      }
+      state.bridgeState = "unavailable";
+      await ensureBridgeAvailable({ force: true });
+      return await rawBridgeRequest(method, path, payload);
+    }
+  }
+
+  async function stopOwnedBridge(reason) {
+    if (
+      !state
+      || !state.config.stopOwnedBridgeOnShutdown
+      || state.bridgeOwnership !== "owned"
+      || !state.bridgeOwnerToken
+    ) {
+      return false;
+    }
+    try {
+      await rawBridgeRequest("POST", "/lifecycle/shutdown", { reason }, {
+        ownerToken: state.bridgeOwnerToken,
+        timeoutMs: 2000,
+      });
+      await appendLog("info", "owned_bridge_shutdown_requested", {
+        reason,
+        owner_id: state.bridgeOwnerId,
+      });
+      return true;
+    } catch (error) {
+      await appendLog("error", "owned_bridge_shutdown_failed", serializeError(error));
+      return false;
+    } finally {
+      state.bridgeOwnership = "none";
+      state.bridgeOwnerId = null;
+      state.bridgeOwnerToken = null;
+    }
+  }
+
+  function installQuitObserver() {
+    if (state.quitObserver) {
+      return;
+    }
+    state.quitObserver = {
+      observe() {
+        if (!state || state.shuttingDown) {
+          return;
+        }
+        state.shuttingDown = true;
+        void writeStatus({ ready: false, last_seen: new Date().toISOString() });
+        void stopOwnedBridge("zotero_exit");
+      },
+    };
+    Services.obs.addObserver(state.quitObserver, "quit-application-granted");
+  }
+
+  function removeQuitObserver() {
+    if (!state || !state.quitObserver) {
+      return;
+    }
+    try {
+      Services.obs.removeObserver(state.quitObserver, "quit-application-granted");
+    } catch (error) {}
+    state.quitObserver = null;
+  }
+
+  function createBridgeConfigManager() {
+    const scope = {};
+    Services.scriptloader.loadSubScript(
+      `${rootURI}chrome/content/scripts/bridge_config_manager.js`,
+      scope,
+    );
+    if (!scope.ZoteroAgentBridgeConfigManager || typeof scope.ZoteroAgentBridgeConfigManager.create !== "function") {
+      throw new BridgeError("bridge_config_module_missing", "Bridge configuration manager module failed to load");
+    }
+    return scope.ZoteroAgentBridgeConfigManager.create({
+      bridgeHome: state.bridgeHome,
+      zoteroDataDir: Zotero.DataDirectory.dir,
+      addonConfig: state.config,
+      Services,
+      IOUtils,
+      PathUtils,
+      appendLog,
+    });
+  }
+
+  function createBridgeBundleManager() {
+    const scope = {};
+    Services.scriptloader.loadSubScript(
+      `${rootURI}chrome/content/scripts/bridge_bundle_manager.js`,
+      scope,
+    );
+    if (!scope.ZoteroAgentBridgeBundleManager || typeof scope.ZoteroAgentBridgeBundleManager.create !== "function") {
+      throw new BridgeError("bridge_bundle_module_missing", "Bridge Bundle manager module failed to load");
+    }
+    return scope.ZoteroAgentBridgeBundleManager.create({
+      rootURI,
+      addonVersion: ADDON_VERSION,
+      Services,
+      IOUtils,
+      PathUtils,
+      Zotero,
+      appendLog,
+    });
+  }
+
+  function createPiChatPanel() {
+    const hostWindow = (typeof Zotero.getMainWindow === "function" && Zotero.getMainWindow())
+      || Services.appShell.hiddenDOMWindow;
+    const scope = {
+      document: hostWindow.document,
+    };
+    for (const resource of [
+      "chrome/content/vendor/marked/marked.umd.js",
+      "chrome/content/vendor/katex/katex.min.js",
+      "chrome/content/scripts/markdown_renderer.js",
+      "chrome/content/scripts/pi_chat_panel.js",
+    ]) {
+      Services.scriptloader.loadSubScript(`${rootURI}${resource}`, scope);
+    }
+    const markedAPI = scope.marked && scope.marked.marked ? scope.marked.marked : scope.marked;
+    if (!markedAPI || typeof markedAPI.lexer !== "function") {
+      throw new BridgeError("markdown_parser_module_missing", "Bundled Markdown parser failed to load");
+    }
+    if (!scope.katex || typeof scope.katex.render !== "function") {
+      throw new BridgeError("math_renderer_module_missing", "Bundled math renderer failed to load");
+    }
+    if (!scope.ZoteroAgentBridgeMarkdownRenderer || typeof scope.ZoteroAgentBridgeMarkdownRenderer.create !== "function") {
+      throw new BridgeError("markdown_renderer_module_missing", "Markdown renderer module failed to load");
+    }
+    if (!scope.ZoteroAgentBridgePiChatPanel || typeof scope.ZoteroAgentBridgePiChatPanel.create !== "function") {
+      throw new BridgeError("pi_chat_module_missing", "Pi chat panel module failed to load");
+    }
+    return scope.ZoteroAgentBridgePiChatPanel.create({
+      Zotero,
+      rootURI,
+      locale: Services.locale.appLocaleAsBCP47,
+      bridgeRequest,
+      appendLog,
+      markdownRenderer: scope.ZoteroAgentBridgeMarkdownRenderer.create({
+        marked: scope.marked,
+        katex: scope.katex,
+      }),
+      async fileExists(path) {
+        try {
+          return Boolean(path && await IOUtils.exists(path));
+        } catch (error) {
+          return false;
+        }
+      },
+    });
   }
 
   function noteTitle(note) {
@@ -293,7 +839,12 @@ function buildZoteroAgentBridge(rootURI) {
   function installMenus(win) {
     const doc = win.document;
     const itemMenu = doc.getElementById("zotero-itemmenu");
-    if (!itemMenu || doc.getElementById("zotero-agent-bridge-sync-obsidian")) {
+    if (!itemMenu || state.menuItems.has(win)) {
+      return;
+    }
+    const existing = doc.getElementById("zotero-agent-bridge-sync-obsidian");
+    if (existing) {
+      state.menuItems.set(win, existing);
       return;
     }
     const menuItem = doc.createXULElement ? doc.createXULElement("menuitem") : doc.createElement("menuitem");
@@ -303,16 +854,19 @@ function buildZoteroAgentBridge(rootURI) {
       void syncSelectedNoteToObsidian(win);
     });
     itemMenu.appendChild(menuItem);
-    state.menuItems.push(menuItem);
+    state.menuItems.set(win, menuItem);
   }
 
-  function uninstallMenus() {
-    for (const item of state.menuItems || []) {
+  function uninstallMenus(win = null) {
+    const entries = win
+      ? [[win, state.menuItems.get(win)]]
+      : [...state.menuItems.entries()];
+    for (const [owner, item] of entries) {
       try {
-        item.remove();
+        item?.remove();
       } catch (error) {}
+      state.menuItems.delete(owner);
     }
-    state.menuItems = [];
   }
 
   async function writeStatus(extra = {}) {
@@ -323,6 +877,15 @@ function buildZoteroAgentBridge(rootURI) {
         last_seen: new Date().toISOString(),
         ready: true,
         bridge_home: state.bridgeHome,
+        bridge_state: state.bridgeState,
+        bridge_ownership: state.bridgeOwnership,
+        bridge_started_by_addon: state.bridgeOwnership === "owned",
+        bridge_last_error: state.bridgeLastError,
+        bridge_bundle_state: state.bridgeBundleState,
+        bridge_bundle_version: state.bridgeBundleInfo?.manifest?.bridge_version || null,
+        bridge_bundle_path: state.bridgeBundleInfo?.versionRoot || null,
+        bridge_managed_config_path: state.bridgeManagedConfig?.configPath || null,
+        bridge_config_source: state.bridgeManagedConfig?.source || null,
       },
       extra,
     );
@@ -746,11 +1309,11 @@ function buildZoteroAgentBridge(rootURI) {
   }
 
   function serializeError(error) {
-    if (error instanceof BridgeError) {
+    if (error instanceof BridgeError || (error && typeof error.code === "string")) {
       return {
         code: error.code,
-        message: error.message,
-        details: error.details,
+        message: error.message || String(error),
+        details: error.details || null,
       };
     }
     return {
@@ -765,12 +1328,44 @@ function buildZoteroAgentBridge(rootURI) {
     const bridgeHome = getBridgeHome(config);
     state = createState(config, bridgeHome);
     await ensureDirectories();
+    state.bridgeConfigManager = createBridgeConfigManager();
+    try {
+      state.bridgeManagedConfig = await state.bridgeConfigManager.ensureManagedConfig();
+      state.config.bridgeHost = state.bridgeManagedConfig.config.host || DEFAULT_BRIDGE_HOST;
+      state.config.bridgePort = state.bridgeManagedConfig.config.port || DEFAULT_BRIDGE_PORT;
+      state.config.apiToken = state.bridgeManagedConfig.config.api_token || state.config.apiToken;
+    } catch (error) {
+      state.bridgeManagedConfig = { error: serializeError(error), source: "error" };
+      state.bridgeLastError = serializeError(error);
+      await appendLog("error", "bridge_config_migration_failed", state.bridgeLastError);
+    }
+    state.bridgeBundleManager = createBridgeBundleManager();
+    state.bridgeBundleState = "installing";
+    try {
+      state.bridgeBundleInfo = await state.bridgeBundleManager.ensureInstalled();
+      state.bridgeBundleState = "ready";
+    } catch (error) {
+      state.bridgeBundleState = "error";
+      state.bridgeLastError = serializeError(error);
+      await appendLog("error", "bridge_bundle_install_failed", state.bridgeLastError);
+    }
+    state.chatPanel = createPiChatPanel();
+    const existingWindows = typeof Zotero.getMainWindows === "function" ? Zotero.getMainWindows() : [];
+    for (const win of existingWindows) {
+      state.chatPanel.installWindow(win);
+    }
     await appendLog("info", "addon_started", {
       addon_version: ADDON_VERSION,
       bridge_home: bridgeHome,
     });
     await writeStatus();
     startTimers();
+    installQuitObserver();
+    try {
+      await ensureBridgeAvailable();
+    } catch (error) {
+      Zotero.debug(`ZoteroAgentBridge automatic Bridge startup failed: ${error}`);
+    }
   }
 
   async function shutdownAddon() {
@@ -778,11 +1373,13 @@ function buildZoteroAgentBridge(rootURI) {
       return;
     }
     state.shuttingDown = true;
+    removeQuitObserver();
     stopTimers();
     await writeStatus({
       ready: false,
       last_seen: new Date().toISOString(),
     });
+    await stopOwnedBridge("addon_shutdown");
     await appendLog("info", "addon_stopped");
   }
 
@@ -793,11 +1390,14 @@ function buildZoteroAgentBridge(rootURI) {
       },
       onMainWindowLoad(window) {
         installMenus(window);
+        state.chatPanel?.installWindow(window);
       },
       onMainWindowUnload(window) {
-        uninstallMenus();
+        state.chatPanel?.cleanupWindow(window);
+        uninstallMenus(window);
       },
       async onShutdown() {
+        state.chatPanel?.shutdown();
         uninstallMenus();
         await shutdownAddon();
       },

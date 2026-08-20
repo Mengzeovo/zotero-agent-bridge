@@ -92,6 +92,99 @@ class CreateNoteRequest(BaseModel):
         return self
 
 
+class AssistantSessionOpenRequest(BaseModel):
+    item_key: str = Field(min_length=1)
+    attachment_key: str | None = None
+
+
+class AssistantMessageRequest(BaseModel):
+    message: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_message(self) -> "AssistantMessageRequest":
+        if not self.message.strip():
+            raise ValueError("message cannot be empty")
+        return self
+
+
+class AssistantModelSelectRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=100)
+    model_id: str = Field(min_length=1, max_length=300)
+
+    @model_validator(mode="after")
+    def validate_model(self) -> "AssistantModelSelectRequest":
+        self.provider = self.provider.strip()
+        self.model_id = self.model_id.strip()
+        if not self.provider or not self.model_id:
+            raise ValueError("provider and model_id cannot be empty")
+        return self
+
+
+PI_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
+
+
+class AssistantThinkingLevelRequest(BaseModel):
+    level: str = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_level(self) -> "AssistantThinkingLevelRequest":
+        self.level = self.level.strip().lower()
+        if self.level not in PI_THINKING_LEVELS:
+            raise ValueError("unsupported thinking level")
+        return self
+
+
+class AssistantSaveNoteRequest(BaseModel):
+    item_key: str = Field(min_length=1, max_length=64)
+    attachment_key: str = Field(min_length=1, max_length=64)
+    context_fingerprint: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    document_id: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    answer: str = Field(min_length=1, max_length=200_000)
+    question: str | None = Field(default=None, max_length=50_000)
+    title: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_content(self) -> "AssistantSaveNoteRequest":
+        if not self.answer.strip():
+            raise ValueError("answer cannot be empty")
+        if self.question is not None and not self.question.strip():
+            self.question = None
+        if self.title is not None and not self.title.strip():
+            self.title = None
+        return self
+
+
+class AssistantContextMetadata(BaseModel):
+    library_id: int | str
+    item_key: str
+    attachment_key: str
+    pdf_path: str
+    cwd: str
+    page_count: int
+    char_count: int
+    fingerprint: str
+    warnings: list[str] = Field(default_factory=list)
+    title: str | None = None
+
+
+class AssistantSessionOpenResponse(BaseModel):
+    session: dict[str, Any]
+    context: AssistantContextMetadata
+    context_injection_required: bool
+    context_updated: bool = False
+    poll_interval_ms: int
+
+
+class AssistantEventsResponse(BaseModel):
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    last_cursor: int
+    cursor_expired: bool = False
+    generation: int | None = None
+    item_key: str | None = None
+    document_id: str | None = None
+    poll_interval_ms: int
+
+
 class SyncExportRequest(BaseModel):
     item_key: str | None = None
     limit: int = 200
@@ -142,4 +235,8 @@ class StableWriteResponse(BaseModel):
     sync_status: str
     version: int | None = None
     title: str | None = None
+
+
+class AssistantSaveNoteResponse(StableWriteResponse):
+    pass
 

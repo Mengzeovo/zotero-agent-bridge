@@ -10,9 +10,9 @@ Push-Location $projectRoot
 try {
   $env:ZOTERO_AGENT_BRIDGE_CONFIG = $configResolved
   if ($InstallDeps) {
-    python -m pip install -e .
+    py -3.12 -m pip install -e .
   }
-  python -m zotero_agent_bridge
+  py -3.12 -m zotero_agent_bridge
 }
 finally {
   Pop-Location

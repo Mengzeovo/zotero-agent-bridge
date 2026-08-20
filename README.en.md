@@ -5,6 +5,8 @@
 - a token-protected HTTP JSON API on `127.0.0.1`
 - an MCP stdio wrapper that forwards the same operations
 - a Zotero companion add-on that performs write operations inside Zotero
+- an Obsidian Desktop plugin that can act as the product-facing process manager for the local bridge
+- a Zotero 9 Item Pane literature assistant that automatically launches a registered Windows Bridge sidecar and uses Bridge-managed Pi RPC
 
 ## What it does
 
@@ -15,6 +17,18 @@
   - `metadata/zotero_bridge/`
   - `notes/zotero_bridge/`
 - stores the bridge runtime queue, logs, add-on status, and generated token under the bridge home
+- chats over metadata, complete PDF text, Zotero notes, and annotations, with explicit confirmation before saving a final answer as a Zotero Note
+
+## 0.3.0 Beta quick start (Windows x64)
+
+1. Install Pi CLI and confirm that `pi` works from a terminal.
+2. Install `dist/zotero-agent-bridge-addon-0.3.0.xpi` in Zotero 9.
+3. Start Zotero. The XPI extracts, verifies, and launches its bundled Bridge automatically.
+4. Select an item with a local PDF and open **Pi Literature Assistant** in the Item Pane.
+
+Python, pip, the repository checkout, and launcher registration are not required for normal 0.3.0 use. Pi remains an external dependency. The bundled EXE is not Authenticode-signed in this Beta, so Windows SmartScreen or antivirus software may display a warning.
+
+Source development and standalone MCP/Obsidian use can continue to use the Python configuration and legacy launcher scripts.
 
 ## HTTP API
 
@@ -34,6 +48,16 @@ Endpoints:
 - `POST /items/{itemKey}/attachments/linked-pdf`
 - `POST /items/{itemKey}/notes`
 - `POST /sync/export`
+- `POST /assistant/session/open`
+- `GET /assistant/session/status`
+- `POST /assistant/session/message`
+- `GET /assistant/session/events?after=...`
+- `GET /assistant/session/messages`
+- `POST /assistant/session/abort`
+- `POST /assistant/session/reset`
+- `POST /assistant/session/save-note`
+- `GET /lifecycle`
+- `POST /lifecycle/shutdown` (owner-authenticated for add-on-managed Bridge instances)
 
 ## Configuration
 
@@ -110,3 +134,18 @@ The companion add-on lives in `zotero_companion_addon/` and is responsible for:
 - creating notes
 
 It watches the shared bridge home, processes queued commands, and writes response files back for the Python bridge to pick up.
+
+## Obsidian plugin
+
+The Obsidian plugin lives in `obsidian_bridge_plugin/` and is responsible for:
+
+- writing a vault-specific bridge config
+- starting, stopping, and restarting the Python bridge process
+- polling bridge health and capability endpoints
+- exposing a settings UI in Obsidian Desktop
+
+It does not replace the Zotero add-on. Zotero write operations still run inside Zotero through `zotero_companion_addon/`.
+
+## Pi literature assistant
+
+See [`docs/PI_LITERATURE_ASSISTANT.md`](docs/PI_LITERATURE_ASSISTANT.md) for Zotero 9 installation, Pi configuration, security boundaries, session behavior, API details, and deferred scope.

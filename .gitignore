@@ -3,5 +3,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 config/bridge-config.json
+config/bridge-config.json.bak-*
 mirror/
+notes/
+metadata/
 tmp/
+obsidian_bridge_plugin/runtime/
+dist/obsidian-zotero-agent-bridge/
+dist/bridge/
+dist/zotero-agent-bridge-addon-*.xpi
+zotero_agent_bridge.egg-info/

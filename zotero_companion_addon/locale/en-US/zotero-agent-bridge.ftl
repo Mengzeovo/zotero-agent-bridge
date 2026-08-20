@@ -1,0 +1,9 @@
+zab-pi-chat-section-title =
+    .label = Pi Literature Assistant
+zab-pi-chat-section-sidenav =
+    .tooltiptext = Pi Literature Assistant
+zab-pi-chat-message-system = Status
+zab-pi-chat-save-note = Save as Zotero Note
+zab-pi-chat-save-note-confirm = Save the current complete answer as a Zotero Note for this paper?
+zab-pi-chat-save-note-success = Zotero Note saved
+zab-pi-chat-save-note-error = Could not save the Zotero Note
