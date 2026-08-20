@@ -1,0 +1,9 @@
+zab-pi-chat-section-title =
+    .label = Pi 文献助手
+zab-pi-chat-section-sidenav =
+    .tooltiptext = Pi 文献助手
+zab-pi-chat-message-system = 状态
+zab-pi-chat-save-note = 保存为 Zotero Note
+zab-pi-chat-save-note-confirm = 将当前完整回答保存为这篇文献的 Zotero Note？
+zab-pi-chat-save-note-success = 已保存 Zotero Note
+zab-pi-chat-save-note-error = 保存 Zotero Note 失败

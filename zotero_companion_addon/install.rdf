@@ -4,15 +4,16 @@
   <Description about="urn:mozilla:install-manifest">
     <em:id>zotero-agent-bridge@local</em:id>
     <em:name>Zotero Agent Bridge</em:name>
-    <em:version>0.1.3</em:version>
+    <em:version>0.3.3</em:version>
     <em:type>2</em:type>
     <em:bootstrap>true</em:bootstrap>
     <em:description>Companion add-on that executes bridge write commands inside Zotero.</em:description>
+    <em:updateURL>https://raw.githubusercontent.com/Mengzeovo/zotero-agent-bridge/main/updates.json</em:updateURL>
     <em:targetApplication>
       <Description>
         <em:id>zotero@zotero.org</em:id>
         <em:minVersion>7.0</em:minVersion>
-        <em:maxVersion>8.0.*</em:maxVersion>
+        <em:maxVersion>9.0.*</em:maxVersion>
       </Description>
     </em:targetApplication>
   </Description>

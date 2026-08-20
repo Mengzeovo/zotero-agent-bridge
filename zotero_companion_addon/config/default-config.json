@@ -2,7 +2,13 @@
   "bridgeHome": "",
   "bridgeHost": "127.0.0.1",
   "bridgePort": 8765,
+  "zoteroLocalApiBase": "http://127.0.0.1:23119/api/users/0",
   "apiToken": "",
+  "autoStartBridge": true,
+  "stopOwnedBridgeOnShutdown": true,
+  "bridgeStartupTimeoutMs": 15000,
+  "bridgeRequestTimeoutMs": 5000,
+  "bridgeLauncherFile": "bridge-launcher.json",
   "pollIntervalMs": 1000,
   "statusIntervalMs": 5000
 }

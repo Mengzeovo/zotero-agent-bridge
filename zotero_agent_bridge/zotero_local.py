@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import requests
@@ -98,10 +99,19 @@ class ZoteroLocalClient:
         return self._request(f"items/{item_key}")
 
     def get_children(self, item_key: str, item_type: str | None = None) -> list[dict[str, Any]]:
-        params: dict[str, Any] = {"limit": 100}
-        if item_type:
-            params["itemType"] = item_type
-        return self._request(f"items/{item_key}/children", params=params)
+        children: list[dict[str, Any]] = []
+        start = 0
+        limit = 100
+        while True:
+            params: dict[str, Any] = {"limit": limit, "start": start}
+            if item_type:
+                params["itemType"] = item_type
+            batch = self._request(f"items/{item_key}/children", params=params)
+            children.extend(batch)
+            if len(batch) < limit:
+                break
+            start += len(batch)
+        return children
 
     def list_top_level_items(self, start: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return self._request("items/top", params={"start": start, "limit": limit, "itemType": "-attachment"})
@@ -121,10 +131,50 @@ class ZoteroLocalClient:
         if enclosure:
             return file_uri_to_path(enclosure)
         path_value = data.get("path")
-        if path_value and path_value.startswith("attachments:") and self.base_attachment_path:
+        if not path_value:
+            return None
+        if path_value.startswith("file:"):
+            return file_uri_to_path(path_value)
+        if path_value.startswith("attachments:") and self.base_attachment_path:
             relative_path = path_value.split("attachments:", 1)[1].lstrip("\\/")
             return f"{self.base_attachment_path}\\{relative_path}".replace("\\\\", "\\")
+        if Path(path_value).expanduser().is_absolute() or PureWindowsPath(path_value).is_absolute():
+            return path_value
         return None
+
+    def _annotation_record(self, annotation: dict[str, Any], item_key: str) -> dict[str, Any]:
+        data = annotation["data"]
+        return {
+            "library_id": annotation["library"]["id"],
+            "item_key": item_key,
+            "attachment_key": data.get("parentItem"),
+            "annotation_key": annotation["key"],
+            "annotation_type": data.get("annotationType"),
+            "text": data.get("annotationText") or "",
+            "comment": data.get("annotationComment") or "",
+            "color": data.get("annotationColor"),
+            "page_label": data.get("annotationPageLabel"),
+            "position": data.get("annotationPosition"),
+            "sort_index": data.get("annotationSortIndex"),
+            "tags": [tag.get("tag") for tag in data.get("tags", []) if tag.get("tag")],
+            "updated_at": data.get("dateModified") or now_iso(),
+        }
+
+    def _attachment_annotations(
+        self,
+        attachment_key: str,
+        item_key: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        try:
+            children = self.get_children(attachment_key, item_type="annotation")
+        except BridgeError as exc:
+            return [], f"Could not load annotations for attachment {attachment_key}: {exc.message}"
+        annotations = [
+            self._annotation_record(child, item_key)
+            for child in children
+            if child.get("data", {}).get("itemType") == "annotation"
+        ]
+        return annotations, None
 
     def build_bundle(self, item_key: str) -> dict[str, Any]:
         item = self.get_item(item_key)
@@ -132,9 +182,19 @@ class ZoteroLocalClient:
         collection_map = self.get_collections_map()
         attachments = []
         notes = []
+        annotations = []
+        warnings = []
         for child in children:
             child_data = child["data"]
             if child_data["itemType"] == "attachment":
+                content_type = child_data.get("contentType")
+                pdf_path = self.resolve_attachment_path(child)
+                child_annotations: list[dict[str, Any]] = []
+                if content_type == "application/pdf" or str(pdf_path or "").lower().endswith(".pdf"):
+                    child_annotations, warning = self._attachment_annotations(child["key"], item_key)
+                    annotations.extend(child_annotations)
+                    if warning:
+                        warnings.append(warning)
                 attachments.append(
                     {
                         "library_id": child["library"]["id"],
@@ -143,13 +203,14 @@ class ZoteroLocalClient:
                         "note_key": None,
                         "slug": None,
                         "title": child_data.get("title"),
-                        "pdf_path": self.resolve_attachment_path(child),
+                        "pdf_path": pdf_path,
                         "path": child_data.get("path"),
-                        "content_type": child_data.get("contentType"),
+                        "content_type": content_type,
                         "link_mode": child_data.get("linkMode"),
                         "checksum": None,
                         "updated_at": child_data.get("dateModified") or now_iso(),
                         "sync_status": "synced",
+                        "annotations": child_annotations,
                     }
                 )
             elif child_data["itemType"] == "note":
@@ -192,6 +253,8 @@ class ZoteroLocalClient:
             ],
             "attachments": attachments,
             "notes": notes,
+            "annotations": annotations,
+            "warnings": warnings,
             "updated_at": data.get("dateModified") or now_iso(),
             "sync_status": "synced",
         }

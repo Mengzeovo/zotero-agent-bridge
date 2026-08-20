@@ -705,6 +705,26 @@ class BridgeTestCase(unittest.TestCase):
         self.assertEqual(reindexed.status_code, 200)
         self.assertEqual(reindexed.json()["indexed"], 1)
 
+    def test_manual_creator_omits_null_alternate_name(self) -> None:
+        created = self.request(
+            "POST",
+            "/items",
+            headers=self.headers,
+            json={
+                "manual_fields": {
+                    "fields": {"title": "Creator serialization"},
+                    "creators": [
+                        {"creatorType": "author", "firstName": "Ada", "lastName": "Context"}
+                    ],
+                }
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        creator = self.backend.items[created.json()["item_key"]]["creators"][0]
+        self.assertEqual(creator["firstName"], "Ada")
+        self.assertEqual(creator["lastName"], "Context")
+        self.assertNotIn("name", creator)
+
     def test_create_from_pdf_marks_needs_review_and_dedupes_by_checksum(self) -> None:
         self.raise_doi_lookup = True
         self.pdf_metadata_return = {"title": "Recovered From PDF"}

@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+from pypdf import PdfReader
+
 from .utils import extract_doi
 
 
@@ -18,10 +20,30 @@ def extract_pdf_text(path: Path, max_pages: int = 2) -> str:
         str(path),
         "-",
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-    if completed.returncode != 0:
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except OSError:
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        text = completed.stdout.strip()
+        if text:
+            return text
+
+    try:
+        reader = PdfReader(path)
+        return "\n\n".join(
+            text
+            for page in reader.pages[:max_pages]
+            if (text := (page.extract_text() or "").strip())
+        ).strip()
+    except Exception:
         return ""
-    return completed.stdout.strip()
 
 
 def guess_title_from_text(text: str) -> str | None:

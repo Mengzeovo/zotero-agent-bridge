@@ -1,5 +1,5 @@
 ﻿var ZoteroAgentBridge = (() => {
-  const ADDON_VERSION = "0.1.2";
+  const ADDON_VERSION = "0.3.3";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const ROOT_CONFIG_PATH = `${rootURI}config/default-config.json`;

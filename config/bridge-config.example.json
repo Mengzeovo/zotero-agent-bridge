@@ -6,6 +6,17 @@
   "metadata_dir": "./mirror/metadata",
   "notes_dir": "./mirror/notes",
   "base_attachment_path": "E:/papers",
+  "pi": {
+    "executable": "C:/Users/<YOUR_USER>/AppData/Roaming/npm/pi.cmd",
+    "session_dir": "C:/Users/<YOUR_USER>/Zotero/zotero-agent-bridge/pi-sessions",
+    "cwd_mode": "selected_pdf_directory",
+    "system_prompt_path": "./config/literature-assistant.md",
+    "model": "",
+    "thinking_level": "medium",
+    "idle_timeout_seconds": 1800,
+    "max_context_chars": 500000,
+    "poll_interval_ms": 300
+  },
   "obsidian": {
     "vault_name": "ResearchVault",
     "vault_path": "E:/Obsidian/ResearchVault",
@@ -15,5 +26,7 @@
   },
   "addon_timeout_seconds": 30.0,
   "addon_status_ttl_seconds": 15.0,
+  "lifecycle_addon_exit_grace_seconds": 30.0,
+  "lifecycle_watchdog_interval_seconds": 1.0,
   "user_agent": "ZoteroAgentBridge/0.1"
 }

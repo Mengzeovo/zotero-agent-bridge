@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zotero-agent-bridge"
-version = "0.1.0"
+version = "0.3.3"
 description = "Local HTTP and MCP bridge for Zotero-backed agent workflows"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.111.0",
   "markdown>=3.6",
   "pydantic>=2.8.0",
+  "pypdf>=5.0.0",
   "requests>=2.32.0",
   "uvicorn>=0.30.0",
 ]
