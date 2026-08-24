@@ -411,9 +411,17 @@ class PiChatManager:
             self._inflight_prompt = None
             self._streaming = False
 
-    def prompt(self, message: str, *, context_fingerprint: str | None = None) -> dict[str, Any]:
-        if not message or not message.strip():
-            raise BridgeError(422, "invalid_prompt", "Prompt message is required")
+    def prompt(
+        self,
+        message: str,
+        *,
+        images: list[dict[str, str]] | None = None,
+        context_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
+        message = str(message or "").strip()
+        normalized_images = [dict(image) for image in (images or []) if isinstance(image, dict)]
+        if not message and not normalized_images:
+            raise BridgeError(422, "invalid_prompt", "Prompt message or image is required")
         if len(message) > self.pi.max_context_chars:
             raise BridgeError(
                 422,
@@ -442,9 +450,12 @@ class PiChatManager:
             self._streaming = True
             self._last_activity = time.monotonic()
         try:
+            payload: dict[str, Any] = {"message": message}
+            if normalized_images:
+                payload["images"] = normalized_images
             response = self._request(
                 "prompt",
-                {"message": message},
+                payload,
                 request_id=request_id,
                 outcome_unknown_after_write=True,
             )

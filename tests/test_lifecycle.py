@@ -53,7 +53,7 @@ class BridgeLifecycleControllerTest(unittest.TestCase):
         self.assertTrue(stopped.wait(1.0))
         status = lifecycle.status()
         self.assertEqual(status["owner_id"], "owner-id")
-        self.assertEqual(status["bridge_version"], "0.3.3")
+        self.assertEqual(status["bridge_version"], "0.3.5")
         self.assertEqual(status["protocol_version"], 1)
         self.assertEqual(status["distribution"], "source")
 

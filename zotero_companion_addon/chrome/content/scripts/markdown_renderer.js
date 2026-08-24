@@ -3,6 +3,8 @@
 var ZoteroAgentBridgeMarkdownRenderer = (() => {
   const HTML_NS = "http://www.w3.org/1999/xhtml";
   const SAFE_PROTOCOLS = new Set(["http:", "https:", "mailto:", "zotero:"]);
+  const MATH_MARKER_PREFIX = "\uE000ZABMATH";
+  const MATH_MARKER_SUFFIX = "\uE001";
 
   function createElement(doc, tag, className = "") {
     const element = doc.createElementNS(HTML_NS, tag);
@@ -45,7 +47,7 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
         index += 1;
         continue;
       }
-      if (text[index] === "$" && text[index + 1] !== "$") {
+      if (text[index] === "$" && text[index - 1] !== "$" && text[index + 1] !== "$") {
         return index;
       }
     }
@@ -100,6 +102,175 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
     return null;
   }
 
+  function isEscaped(text, index) {
+    let backslashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor -= 1) {
+      backslashes += 1;
+    }
+    return backslashes % 2 === 1;
+  }
+
+  function findClosingDelimiter(text, delimiter, start) {
+    let cursor = start;
+    while (cursor < text.length) {
+      const end = text.indexOf(delimiter, cursor);
+      if (end === -1) {
+        return -1;
+      }
+      if (!isEscaped(text, end)) {
+        return end;
+      }
+      cursor = end + delimiter.length;
+    }
+    return -1;
+  }
+
+  function fencedCodeEnd(text, start) {
+    const opening = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/.exec(text.slice(start));
+    if (!opening) {
+      return -1;
+    }
+    const marker = opening[1];
+    const markerCharacter = marker[0];
+    const minimumLength = marker.length;
+    let cursor = start + opening[0].length;
+    while (cursor < text.length) {
+      const lineEnd = text.indexOf("\n", cursor);
+      const end = lineEnd === -1 ? text.length : lineEnd + 1;
+      const line = text.slice(cursor, end);
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*(?:\n|$)/.exec(line);
+      if (closing && closing[1][0] === markerCharacter && closing[1].length >= minimumLength) {
+        return end;
+      }
+      cursor = end;
+    }
+    return text.length;
+  }
+
+  function mathMarker(index) {
+    return `${MATH_MARKER_PREFIX}${index}${MATH_MARKER_SUFFIX}`;
+  }
+
+  function protectMath(value) {
+    const text = String(value || "");
+    const math = [];
+    const output = [];
+    let cursor = 0;
+    let lineStart = true;
+    const stash = (source, displayMode) => {
+      const index = math.length;
+      math.push({ source: String(source || "").trim(), displayMode: Boolean(displayMode) });
+      output.push(mathMarker(index));
+    };
+    while (cursor < text.length) {
+      if (lineStart) {
+        const fenceEnd = fencedCodeEnd(text, cursor);
+        if (fenceEnd !== -1) {
+          output.push(text.slice(cursor, fenceEnd));
+          cursor = fenceEnd;
+          lineStart = true;
+          continue;
+        }
+        if (text.startsWith("    ", cursor) || text[cursor] === "\t") {
+          const lineEnd = text.indexOf("\n", cursor);
+          const end = lineEnd === -1 ? text.length : lineEnd + 1;
+          output.push(text.slice(cursor, end));
+          cursor = end;
+          lineStart = true;
+          continue;
+        }
+      }
+      if (text[cursor] === "`") {
+        let markerEnd = cursor + 1;
+        while (markerEnd < text.length && text[markerEnd] === "`") {
+          markerEnd += 1;
+        }
+        const marker = text.slice(cursor, markerEnd);
+        const closing = text.indexOf(marker, markerEnd);
+        if (closing !== -1) {
+          const end = closing + marker.length;
+          const code = text.slice(cursor, end);
+          output.push(code);
+          lineStart = code.endsWith("\n");
+          cursor = end;
+          continue;
+        }
+      }
+      let opening = null;
+      let closing = null;
+      let displayMode = false;
+      if (text.startsWith("\\[", cursor) && !isEscaped(text, cursor)) {
+        opening = "\\[";
+        closing = "\\]";
+        displayMode = true;
+      } else if (text.startsWith("\\(", cursor) && !isEscaped(text, cursor)) {
+        opening = "\\(";
+        closing = "\\)";
+      } else if (text.startsWith("$$", cursor) && !isEscaped(text, cursor)) {
+        opening = "$$";
+        closing = "$$";
+        displayMode = true;
+      } else if (text[cursor] === "$" && text[cursor + 1] !== "$" && !isEscaped(text, cursor)) {
+        opening = "$";
+        closing = "$";
+      }
+      if (opening) {
+        const end = closing === "$"
+          ? findClosingDollar(text, cursor + opening.length)
+          : findClosingDelimiter(text, closing, cursor + opening.length);
+        if (end !== -1 && end > cursor + opening.length) {
+          stash(text.slice(cursor + opening.length, end), displayMode);
+          cursor = end + closing.length;
+          lineStart = false;
+          continue;
+        }
+      }
+      const character = text[cursor];
+      output.push(character);
+      lineStart = character === "\n";
+      cursor += 1;
+    }
+    return { source: output.join(""), math };
+  }
+
+  function markerIndex(value) {
+    const text = String(value || "").trim();
+    const match = new RegExp(`^${MATH_MARKER_PREFIX}(\\d+)${MATH_MARKER_SUFFIX}$`).exec(text);
+    return match ? Number(match[1]) : -1;
+  }
+
+  function splitProtectedMath(value, entries) {
+    const text = String(value || "");
+    const parts = [];
+    const pattern = new RegExp(`${MATH_MARKER_PREFIX}(\\d+)${MATH_MARKER_SUFFIX}`, "g");
+    let start = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > start) {
+        parts.push({ type: "text", value: text.slice(start, match.index) });
+      }
+      const entry = entries[Number(match[1])];
+      if (entry) {
+        parts.push({ type: "math", value: entry.source, displayMode: entry.displayMode });
+      } else {
+        parts.push({ type: "text", value: match[0] });
+      }
+      start = match.index + match[0].length;
+    }
+    if (start < text.length) {
+      parts.push({ type: "text", value: text.slice(start) });
+    }
+    return parts.length ? parts : [{ type: "text", value: text }];
+  }
+
+  function prepareMarkdown(markedLibrary, source) {
+    const protectedMath = protectMath(source);
+    return {
+      tokens: markedLexer(markedLibrary, protectedMath.source),
+      math: protectedMath.math,
+    };
+  }
+
   class Renderer {
     constructor(options = {}) {
       this.marked = options.marked || null;
@@ -109,14 +280,16 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
     render(target, source) {
       const text = String(source || "");
       const doc = target.ownerDocument;
-      const tokens = markedLexer(this.marked, text);
-      if (!tokens) {
+      const prepared = prepareMarkdown(this.marked, text);
+      if (!prepared.tokens) {
         target.textContent = text;
         return;
       }
+      this.mathEntries = prepared.math;
       const fragment = doc.createDocumentFragment();
-      this._renderBlocks(doc, fragment, tokens);
+      this._renderBlocks(doc, fragment, prepared.tokens);
       target.replaceChildren(fragment);
+      this.mathEntries = [];
     }
 
     _renderBlocks(doc, parent, tokens) {
@@ -132,8 +305,12 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
           continue;
         }
         if (token.type === "paragraph" || token.type === "text") {
-          const math = blockMathSource(token.text);
-          if (math !== null) {
+          const protectedIndex = markerIndex(token.text);
+          const protectedMath = this.mathEntries && this.mathEntries[protectedIndex];
+          const math = protectedMath && protectedMath.displayMode
+            ? protectedMath.source
+            : blockMathSource(token.text);
+          if (math !== null && math !== undefined) {
             parent.append(this._math(doc, math, true));
           } else {
             const paragraph = createElement(doc, "p");
@@ -193,10 +370,17 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
           continue;
         }
         if (token.type === "text" || token.type === "escape") {
-          for (const part of splitInlineMath(token.text || token.raw || "")) {
-            parent.append(part.type === "math"
-              ? this._math(doc, part.value, false)
-              : doc.createTextNode(part.value));
+          const protectedParts = splitProtectedMath(token.text || token.raw || "", this.mathEntries || []);
+          for (const protectedPart of protectedParts) {
+            if (protectedPart.type === "math") {
+              parent.append(this._math(doc, protectedPart.value, false));
+              continue;
+            }
+            for (const part of splitInlineMath(protectedPart.value)) {
+              parent.append(part.type === "math"
+                ? this._math(doc, part.value, false)
+                : doc.createTextNode(part.value));
+            }
           }
           continue;
         }
@@ -347,8 +531,11 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
     },
     __test: {
       blockMathSource,
+      prepareMarkdown,
+      protectMath,
       safeHref,
       splitInlineMath,
+      splitProtectedMath,
     },
   };
 })();

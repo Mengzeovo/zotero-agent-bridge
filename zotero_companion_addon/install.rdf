@@ -4,7 +4,7 @@
   <Description about="urn:mozilla:install-manifest">
     <em:id>zotero-agent-bridge@local</em:id>
     <em:name>Zotero Agent Bridge</em:name>
-    <em:version>0.3.3</em:version>
+    <em:version>0.3.5</em:version>
     <em:type>2</em:type>
     <em:bootstrap>true</em:bootstrap>
     <em:description>Companion add-on that executes bridge write commands inside Zotero.</em:description>

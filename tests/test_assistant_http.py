@@ -142,6 +142,7 @@ class FakePiChatManager:
         self.streaming = False
         self.open_calls: list[tuple[str, Path, str | int | None]] = []
         self.prompt_calls: list[str] = []
+        self.prompt_images: list[list[dict[str, str]]] = []
         self.prompt_context_fingerprints: list[str | None] = []
         self.prompt_error: BridgeError | None = None
         self.max_context_chars: int | None = None
@@ -202,8 +203,15 @@ class FakePiChatManager:
     def context_injection_required(self, fingerprint: str) -> bool:
         return self.context_fingerprint != fingerprint
 
-    def prompt(self, message: str, *, context_fingerprint: str | None = None) -> dict[str, Any]:
+    def prompt(
+        self,
+        message: str,
+        *,
+        images: list[dict[str, str]] | None = None,
+        context_fingerprint: str | None = None,
+    ) -> dict[str, Any]:
         self.prompt_calls.append(message)
+        self.prompt_images.append([dict(image) for image in (images or [])])
         self.prompt_context_fingerprints.append(context_fingerprint)
         if self.prompt_error:
             raise self.prompt_error
@@ -214,7 +222,10 @@ class FakePiChatManager:
                 "Prompt and literature context exceed the configured Pi context limit",
                 {"actual_chars": len(message), "max_context_chars": self.max_context_chars},
             )
-        self.messages.append({"role": "user", "content": message})
+        content: str | list[dict[str, str]] = message
+        if images:
+            content = ([{"type": "text", "text": message}] if message else []) + [dict(image) for image in images]
+        self.messages.append({"role": "user", "content": content})
         if context_fingerprint is not None:
             self.context_fingerprint = context_fingerprint
         return {"type": "response", "command": "prompt", "success": True}
@@ -565,11 +576,16 @@ class AssistantHttpTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["context_injected"])
+        self.assertEqual(response.json()["event_cursor"], 8)
+        self.assertEqual(self.pi_chat.clear_events_calls, 1)
+        self.assertEqual(self.pi_chat.events, [])
         first_prompt = self.pi_chat.prompt_calls[0]
         self.assertIn("SECRET FULL CONTEXT THAT MUST NOT LEAVE THE SERVER", first_prompt)
         self.assertIn("Explain the method.", first_prompt)
         self.assertEqual(self.pi_chat.prompt_context_fingerprints, ["f" * 64])
 
+        self.pi_chat.last_cursor = 9
+        self.pi_chat.events = [{"cursor": 9, "type": "agent_settled"}]
         follow_up = self.client.post(
             "/assistant/session/message",
             headers=self.headers,
@@ -577,6 +593,9 @@ class AssistantHttpTest(unittest.TestCase):
         )
         self.assertEqual(follow_up.status_code, 200)
         self.assertFalse(follow_up.json()["context_injected"])
+        self.assertEqual(follow_up.json()["event_cursor"], 9)
+        self.assertEqual(self.pi_chat.clear_events_calls, 2)
+        self.assertEqual(self.pi_chat.events, [])
         self.assertEqual(self.pi_chat.prompt_calls[1], "What about the baseline?")
 
         messages = self.client.get("/assistant/session/messages", headers=self.headers)
@@ -593,15 +612,73 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertFalse(status.json()["context_injection_required"])
         self.assertNotIn("markdown", status.json()["context"])
 
+        self.pi_chat.events = [{"cursor": 10, "type": "agent_settled"}]
         aborted = self.client.post("/assistant/session/abort", headers=self.headers)
         self.assertEqual(aborted.status_code, 200)
         self.assertEqual(self.pi_chat.abort_calls, 1)
+        self.assertEqual(self.pi_chat.clear_events_calls, 3)
+        self.assertEqual(self.pi_chat.events, [])
 
         closed = self.client.post("/assistant/session/close", headers=self.headers)
         self.assertEqual(closed.status_code, 200)
         self.assertEqual(closed.json(), {"closed": True})
         status = self.client.get("/assistant/session/status", headers=self.headers)
         self.assertFalse(status.json()["context_prepared"])
+
+    def test_message_accepts_clipboard_images_and_redacts_base64_from_history(self) -> None:
+        image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZkGQAAAAASUVORK5CYII="
+        self.assertEqual(self._open().status_code, 200)
+        response = self.client.post(
+            "/assistant/session/message",
+            headers=self.headers,
+            json={
+                "message": "",
+                "images": [{"type": "image", "data": image_data, "mimeType": "image/png"}],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("SECRET FULL CONTEXT", self.pi_chat.prompt_calls[-1])
+        self.assertEqual(
+            self.pi_chat.prompt_images[-1],
+            [{"type": "image", "data": image_data, "mimeType": "image/png"}],
+        )
+
+        messages = self.client.get("/assistant/session/messages", headers=self.headers)
+        self.assertEqual(messages.status_code, 200)
+        content = messages.json()["data"]["messages"][-1]["content"]
+        self.assertEqual(
+            content,
+            [
+                {"type": "text", "text": "[Literature context loaded]"},
+                {"type": "image", "mimeType": "image/png"},
+            ],
+        )
+        self.assertNotIn(image_data, messages.text)
+
+        empty = self.client.post(
+            "/assistant/session/message",
+            headers=self.headers,
+            json={"message": "", "images": []},
+        )
+        self.assertEqual(empty.status_code, 422)
+        invalid = self.client.post(
+            "/assistant/session/message",
+            headers=self.headers,
+            json={"message": "image", "images": [{"type": "image", "data": "not-base64", "mimeType": "image/png"}]},
+        )
+        self.assertEqual(invalid.status_code, 422)
+        too_many = self.client.post(
+            "/assistant/session/message",
+            headers=self.headers,
+            json={
+                "message": "images",
+                "images": [
+                    {"type": "image", "data": image_data, "mimeType": "image/png"}
+                    for _ in range(5)
+                ],
+            },
+        )
+        self.assertEqual(too_many.status_code, 422)
 
     def test_save_note_requires_auth_active_context_and_bounded_answer(self) -> None:
         unauthorized = self.client.post(
@@ -657,6 +734,8 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertEqual(payload["note_key"], "NOTE0001")
         self.assertEqual(self.writer.calls[0][0], "create_note")
         self.assertEqual(self.writer.calls[0][1]["item_key"], ITEM_KEY)
+        self.assertIn("markdown", self.writer.calls[0][1])
+        self.assertIn("note_html", self.writer.calls[0][1])
 
         note_path = Path(payload["mirror_ref"])
         markdown = note_path.read_text(encoding="utf-8")
@@ -674,6 +753,45 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertNotIn("<img", markdown)
         self.assertNotIn("SECRET FULL CONTEXT", markdown)
         self.assertNotIn("You are a literature assistant", markdown)
+
+    def test_save_note_normalizes_math_and_builds_zotero_formula_fallback(self) -> None:
+        self.assertEqual(self._open().status_code, 200)
+        question = "Which equations matter?"
+        answer = r"""Inline \(x+y\) is important.
+
+\[
+\int_0^1 x^2\,dx
+\]
+
+Keep code `\(literal\)` unchanged.
+
+```tex
+\[literal\]
+```"""
+        self.pi_chat.messages = [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer, "stopReason": "stop"},
+        ]
+
+        response = self.client.post(
+            "/assistant/session/save-note",
+            headers=self.headers,
+            json=self._save_payload(answer, question),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        command, note_payload = self.writer.calls[0]
+        self.assertEqual(command, "create_note")
+        markdown = str(note_payload["markdown"])
+        note_html = str(note_payload["note_html"])
+        self.assertIn("Inline $x+y$ is important.", markdown)
+        self.assertIn("$$\n\\int_0^1 x^2\\,dx\n$$", markdown)
+        self.assertIn(r"`\(literal\)`", markdown)
+        self.assertIn("```tex\n\\[literal\\]\n```", markdown)
+        self.assertIn('<span class="math">$x+y$</span>', note_html)
+        self.assertIn('<pre class="math">$$\n\\int_0^1 x^2\\,dx\n$$</pre>', note_html)
+        self.assertIn("<code>\\(literal\\)</code>", note_html)
+        self.assertIn('<code class="language-tex">\\[literal\\]', note_html)
 
     def test_save_note_rejects_streaming_partial_stale_and_preserves_writer_errors(self) -> None:
         self.assertEqual(self._open().status_code, 200)
