@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
-from typing import Any
+import base64
+import binascii
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -97,13 +99,46 @@ class AssistantSessionOpenRequest(BaseModel):
     attachment_key: str | None = None
 
 
+ASSISTANT_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+ASSISTANT_MAX_IMAGES = 4
+ASSISTANT_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+ASSISTANT_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
+ASSISTANT_MAX_IMAGE_BASE64_CHARS = ((ASSISTANT_MAX_IMAGE_BYTES + 2) // 3) * 4
+
+
+class AssistantImageInput(BaseModel):
+    type: Literal["image"] = "image"
+    data: str = Field(min_length=4, max_length=ASSISTANT_MAX_IMAGE_BASE64_CHARS)
+    mimeType: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
+
+    def decoded_size(self) -> int:
+        try:
+            return len(base64.b64decode(self.data, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("image data must be valid base64") from exc
+
+    @model_validator(mode="after")
+    def validate_image(self) -> "AssistantImageInput":
+        size = self.decoded_size()
+        if size <= 0:
+            raise ValueError("image data cannot be empty")
+        if size > ASSISTANT_MAX_IMAGE_BYTES:
+            raise ValueError("image exceeds the per-image size limit")
+        return self
+
+
 class AssistantMessageRequest(BaseModel):
-    message: str = Field(min_length=1)
+    message: str = ""
+    images: list[AssistantImageInput] = Field(default_factory=list, max_length=ASSISTANT_MAX_IMAGES)
 
     @model_validator(mode="after")
     def validate_message(self) -> "AssistantMessageRequest":
-        if not self.message.strip():
-            raise ValueError("message cannot be empty")
+        self.message = self.message.strip()
+        if not self.message and not self.images:
+            raise ValueError("message or image is required")
+        total_size = sum(image.decoded_size() for image in self.images)
+        if total_size > ASSISTANT_MAX_TOTAL_IMAGE_BYTES:
+            raise ValueError("images exceed the total size limit")
         return self
 
 

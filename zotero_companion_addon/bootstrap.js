@@ -4,6 +4,24 @@
  * Compatible with Zotero 7/8/9 bootstrapped add-ons.
  */
 
+async function convertMarkdownNoteHTML(payload, betterNotes) {
+  const fallbackHTML = typeof payload?.note_html === "string" ? payload.note_html : "";
+  const markdown = typeof payload?.markdown === "string" ? payload.markdown : "";
+  const convert = betterNotes?.api?.convert;
+  if (!markdown.trim() || !convert || typeof convert.md2html !== "function") {
+    return { html: fallbackHTML, renderer: "bridge", error: null };
+  }
+  try {
+    const html = await convert.md2html(markdown);
+    if (typeof html !== "string" || !html.trim()) {
+      throw new Error("Better Notes returned empty note HTML");
+    }
+    return { html, renderer: "better-notes", error: null };
+  } catch (error) {
+    return { html: fallbackHTML, renderer: "bridge", error };
+  }
+}
+
 function install(data, reason) {}
 
 async function writeBootstrapLog(message, details) {
@@ -28,7 +46,7 @@ async function writeBootstrapLog(message, details) {
 }
 
 function buildZoteroAgentBridge(rootURI) {
-  const ADDON_VERSION = "0.3.3";
+  const ADDON_VERSION = "0.3.5";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const DEFAULT_BRIDGE_HOST = "127.0.0.1";
@@ -1102,11 +1120,22 @@ function buildZoteroAgentBridge(rootURI) {
   async function handleCreateNote(request) {
     const payload = request.payload;
     const parent = await getItemByKey(payload.item_key, payload.library_id);
+    const converted = await convertMarkdownNoteHTML(payload, Zotero.BetterNotes);
+    if (converted.renderer === "better-notes") {
+      await appendLog("info", "note_markdown_converted_with_better_notes", {
+        item_key: parent.key,
+      });
+    } else if (converted.error) {
+      await appendLog("warning", "better_notes_note_conversion_failed", {
+        item_key: parent.key,
+        error: serializeError(converted.error),
+      });
+    }
     const note = new Zotero.Item("note");
     note.libraryID = parent.libraryID;
     note.parentID = parent.id;
     await note.saveTx();
-    note.setNote(payload.note_html || "");
+    note.setNote(converted.html);
     await note.saveTx();
 
     return buildSuccessResponse(request.request_id, {
@@ -1439,4 +1468,12 @@ async function shutdown({ id, version, resourceURI, rootURI }, reason) {
 }
 
 function uninstall(data, reason) {}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    __test: {
+      convertMarkdownNoteHTML,
+    },
+  };
+}
 

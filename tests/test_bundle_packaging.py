@@ -15,8 +15,8 @@ from zotero_agent_bridge.version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSI
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE_ROOT = ROOT / "dist" / "bridge" / "windows-x64" / "0.3.3"
-XPI = ROOT / "dist" / "zotero-agent-bridge-addon-0.3.3.xpi"
+BUNDLE_ROOT = ROOT / "dist" / "bridge" / "windows-x64" / "0.3.5"
+XPI = ROOT / "dist" / "zotero-agent-bridge-addon-0.3.5.xpi"
 TEST_RUNTIME = ROOT / "tmp" / "test-runtime"
 
 
@@ -34,14 +34,14 @@ class BundlePackagingTest(unittest.TestCase):
         TEST_RUNTIME.mkdir(parents=True, exist_ok=True)
 
     def test_runtime_version_and_source_resource(self) -> None:
-        self.assertEqual(BRIDGE_VERSION, "0.3.3")
+        self.assertEqual(BRIDGE_VERSION, "0.3.5")
         self.assertEqual(LIFECYCLE_PROTOCOL_VERSION, 1)
         self.assertTrue(resource_path("config", "literature-assistant.md").is_file())
 
     def test_bundle_manifest_covers_exact_file_set_and_hashes(self) -> None:
         manifest = json.loads((BUNDLE_ROOT / "bridge-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["bundle_schema_version"], 1)
-        self.assertEqual(manifest["bridge_version"], "0.3.3")
+        self.assertEqual(manifest["bridge_version"], "0.3.5")
         self.assertEqual(manifest["protocol_version"], 1)
         self.assertEqual(manifest["distribution"], "xpi-bundled")
         records = {record["path"]: record for record in manifest["files"]}
@@ -79,7 +79,7 @@ class BundlePackagingTest(unittest.TestCase):
             executable.write_bytes(b"good")
             manifest = {
                 "bundle_schema_version": 1,
-                "bridge_version": "0.3.3",
+                "bridge_version": "0.3.5",
                 "protocol_version": 1,
                 "distribution": "xpi-bundled",
                 "platform": "windows",
@@ -105,12 +105,12 @@ const path = require('path');
 const bundle = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
 const config = require('./zotero_companion_addon/chrome/content/scripts/bridge_config_manager.js').__test;
 const manifest = {
-  bundle_schema_version: 1, bridge_version: '0.3.3', protocol_version: 1,
+  bundle_schema_version: 1, bridge_version: '0.3.5', protocol_version: 1,
   distribution: 'xpi-bundled', platform: 'windows', architecture: 'x64',
   entrypoint: 'zab-bridge/zab-bridge.exe', sentinel: '.zab-bundle-installed.json',
   files: [{path:'zab-bridge/zab-bridge.exe',size:1,sha256:'a'.repeat(64)}]
 };
-assert.strictEqual(bundle.validateManifest(manifest).bridge_version, '0.3.3');
+assert.strictEqual(bundle.validateManifest(manifest).bridge_version, '0.3.5');
 assert.throws(() => bundle.normalizeManifestPath('../escape'));
 const P = {
   isAbsolute:path.win32.isAbsolute,

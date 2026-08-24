@@ -17,6 +17,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       panelID: `${PANE_ID}-reader-pane`,
     }),
   });
+  const MAX_IMAGES = 4;
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
   const STRINGS = {
     "zh-CN": {
@@ -45,7 +48,14 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       thinking: "Pi 正在阅读和回答…",
       stopped: "已停止生成",
       switchPending: "Pi 正在回答。停止或等待完成后再切换文献。",
-      inputPlaceholder: "询问研究问题、方法、实验、公式或局限…",
+      inputPlaceholder: "输入问题；Enter 发送，Shift+Enter 换行；可直接粘贴图片…",
+      imageCount: "已附加 {count} 张图片",
+      imageAttached: "已附加图片，可继续输入问题或直接发送",
+      imageRemove: "移除图片 {index}",
+      imageLimit: "一次最多发送 4 张图片",
+      imageTooLarge: "单张图片不能超过 10 MiB",
+      imageUnsupported: "仅支持 PNG、JPEG、WebP 和 GIF 图片",
+      imageReadFailed: "无法读取剪贴板图片",
       send: "发送",
       stop: "停止",
       reset: "新会话",
@@ -95,7 +105,14 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       thinking: "Pi is reading and answering…",
       stopped: "Generation stopped",
       switchPending: "Pi is answering. Stop or wait before switching papers.",
-      inputPlaceholder: "Ask about the research question, method, experiments, equations, or limitations…",
+      inputPlaceholder: "Type a question; Enter sends, Shift+Enter adds a line; paste images directly…",
+      imageCount: "{count} image(s) attached",
+      imageAttached: "Image attached. Add a question or send it directly.",
+      imageRemove: "Remove image {index}",
+      imageLimit: "You can send up to 4 images at once",
+      imageTooLarge: "Each image must be 10 MiB or smaller",
+      imageUnsupported: "Only PNG, JPEG, WebP, and GIF images are supported",
+      imageReadFailed: "Could not read the clipboard image",
       send: "Send",
       stop: "Stop",
       reset: "New session",
@@ -153,6 +170,35 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       .filter((block) => block && block.type === "text" && typeof block.text === "string")
       .map((block) => block.text)
       .join("\n");
+  }
+
+  function contentImageCount(content) {
+    return Array.isArray(content)
+      ? content.filter((block) => block && block.type === "image").length
+      : 0;
+  }
+
+  function displayContentText(content, strings) {
+    const text = contentText(content).trim();
+    const count = contentImageCount(content);
+    const imageLabel = count ? strings.imageCount.replace("{count}", String(count)) : "";
+    return [text, imageLabel].filter(Boolean).join("\n");
+  }
+
+  function imagePayloadFromDataURL(value, fallbackMimeType = "") {
+    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/u.exec(String(value || ""));
+    if (!match) {
+      throw new Error("Invalid image data URL");
+    }
+    const mimeType = String(match[1] || fallbackMimeType).toLowerCase();
+    if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+      throw new Error("Unsupported image type");
+    }
+    return { type: "image", data: match[2], mimeType };
+  }
+
+  function shouldSendOnKeydown(event) {
+    return Boolean(event && event.key === "Enter" && !event.shiftKey && !event.isComposing);
   }
 
   function errorMessage(error, strings) {
@@ -236,10 +282,13 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.thinkingLoading = false;
       this.thinkingLevels = [];
       this.currentThinkingLevel = "";
+      this.images = [];
+      this.pendingImageReads = 0;
       this.cursor = 0;
       this.pollIntervalMs = 300;
       this.pollTimer = null;
       this.pollCount = 0;
+      this.promptStarted = false;
       this.currentAssistant = null;
       this.currentAssistantText = "";
       this.activeQuestion = null;
@@ -295,17 +344,22 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.emptyState = createElement(doc, "p", "zab-chat__empty", this.strings.empty);
       this.transcript.append(this.emptyState);
 
+      this.imageTray = createElement(doc, "div", "zab-chat__image-tray");
+      this.imageTray.hidden = true;
+      this.imageTray.setAttribute("aria-live", "polite");
+
       this.input = createElement(doc, "textarea", "zab-chat__input");
       this.input.rows = 3;
       this.input.placeholder = this.strings.inputPlaceholder;
       this.input.setAttribute("aria-label", this.strings.inputPlaceholder);
       this.input.addEventListener("input", () => this._updateControls());
       this.input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        if (shouldSendOnKeydown(event)) {
           event.preventDefault();
           void this.send();
         }
       });
+      this.input.addEventListener("paste", (event) => void this._handlePaste(event));
 
       const actionRow = createElement(doc, "div", "zab-chat__actions");
       const primaryActions = createElement(doc, "div", "zab-chat__actions-primary");
@@ -320,7 +374,16 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       secondaryActions.append(this.resetButton, this.saveButton);
       actionRow.append(primaryActions, secondaryActions);
 
-      this.root.append(paperRow, statusRow, this.transcript, modelRow, thinkingRow, this.input, actionRow);
+      this.root.append(
+        paperRow,
+        statusRow,
+        this.transcript,
+        modelRow,
+        thinkingRow,
+        this.imageTray,
+        this.input,
+        actionRow,
+      );
       this.body.replaceChildren(this.root);
       this._setStatus("idle", this.strings.noPaper);
       this._updateControls();
@@ -331,6 +394,113 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       button.type = "button";
       button.addEventListener("click", () => void handler());
       return button;
+    }
+
+    _renderImages() {
+      if (!this.imageTray) {
+        return;
+      }
+      this.imageTray.replaceChildren();
+      this.imageTray.hidden = !this.images.length;
+      for (const [index, image] of this.images.entries()) {
+        const card = createElement(this.doc, "div", "zab-chat__image-card");
+        const preview = createElement(this.doc, "img", "zab-chat__image-preview");
+        preview.src = `data:${image.mimeType};base64,${image.data}`;
+        preview.alt = this.strings.imageCount.replace("{count}", "1");
+        const remove = this._button("×", "zab-chat__image-remove", () => this._removeImage(image.id));
+        remove.setAttribute("aria-label", this.strings.imageRemove.replace("{index}", String(index + 1)));
+        remove.title = remove.getAttribute("aria-label");
+        remove.disabled = this.sending || this.streaming;
+        card.append(preview, remove);
+        this.imageTray.append(card);
+      }
+    }
+
+    _removeImage(imageID) {
+      if (this.sending || this.streaming) {
+        return;
+      }
+      this.images = this.images.filter((image) => image.id !== imageID);
+      this._renderImages();
+      this._updateControls();
+    }
+
+    _insertTextAtCursor(text) {
+      if (!text) {
+        return;
+      }
+      const start = Number.isInteger(this.input.selectionStart) ? this.input.selectionStart : this.input.value.length;
+      const end = Number.isInteger(this.input.selectionEnd) ? this.input.selectionEnd : start;
+      this.input.value = `${this.input.value.slice(0, start)}${text}${this.input.value.slice(end)}`;
+      const cursor = start + text.length;
+      this.input.setSelectionRange(cursor, cursor);
+    }
+
+    _readImageFile(file) {
+      const mimeType = String(file && file.type || "").toLowerCase();
+      if (!ALLOWED_IMAGE_TYPES.has(mimeType)) {
+        return Promise.reject(new Error(this.strings.imageUnsupported));
+      }
+      if (Number(file.size) > MAX_IMAGE_BYTES) {
+        return Promise.reject(new Error(this.strings.imageTooLarge));
+      }
+      return new Promise((resolve, reject) => {
+        const reader = new this.win.FileReader();
+        reader.onerror = () => reject(new Error(this.strings.imageReadFailed));
+        reader.onload = () => {
+          try {
+            resolve({
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              size: Number(file.size) || 0,
+              ...imagePayloadFromDataURL(reader.result, mimeType),
+            });
+          } catch (error) {
+            reject(new Error(this.strings.imageReadFailed));
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async _handlePaste(event) {
+      const clipboard = event.clipboardData;
+      const items = clipboard && clipboard.items ? [...clipboard.items] : [];
+      const imageFiles = items
+        .filter((item) => item && item.kind === "file" && String(item.type || "").toLowerCase().startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (!imageFiles.length) {
+        return;
+      }
+      event.preventDefault();
+      this._insertTextAtCursor(clipboard.getData("text/plain"));
+      const available = Math.max(0, MAX_IMAGES - this.images.length - this.pendingImageReads);
+      if (!available) {
+        this._setStatus("warning", this.strings.imageLimit);
+        return;
+      }
+      const selected = imageFiles.slice(0, available);
+      const exceededLimit = selected.length < imageFiles.length;
+      this.pendingImageReads += selected.length;
+      this._updateControls();
+      try {
+        const images = await Promise.all(selected.map((file) => this._readImageFile(file)));
+        if (this.disposed) {
+          return;
+        }
+        this.images.push(...images);
+        this._renderImages();
+        this._setStatus(exceededLimit ? "warning" : "ready", exceededLimit ? this.strings.imageLimit : this.strings.imageAttached);
+      } catch (error) {
+        if (!this.disposed) {
+          this._setStatus("warning", error && error.message ? error.message : this.strings.imageReadFailed);
+        }
+      } finally {
+        this.pendingImageReads = Math.max(0, this.pendingImageReads - selected.length);
+        if (!this.disposed) {
+          this._updateControls();
+        }
+      }
     }
 
     _setStatus(kind, text) {
@@ -354,10 +524,15 @@ var ZoteroAgentBridgePiChatPanel = (() => {
 
     _updateControls() {
       const hasSelection = Boolean(this.selection);
-      const busy = this.sending || this.streaming;
+      const busy = this.sending || this.streaming || this.pendingImageReads > 0;
       this.input.disabled = !hasSelection || busy;
-      this.sendButton.disabled = !hasSelection || busy || !this.input.value.trim();
+      this.sendButton.disabled = !hasSelection || busy || (!this.input.value.trim() && !this.images.length);
       this.stopButton.disabled = !this.streaming;
+      if (this.imageTray) {
+        for (const button of this.imageTray.querySelectorAll(".zab-chat__image-remove")) {
+          button.disabled = this.sending || this.streaming;
+        }
+      }
       this.openButton.disabled = !hasSelection || busy || this.sessionOpen;
       this.resetButton.disabled = !this.sessionOpen || busy;
       this.modelSelect.disabled = !this.sessionOpen || busy || this.modelLoading || !this.models.length;
@@ -486,12 +661,15 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.contextUpdated = false;
       this.streaming = false;
       this.sending = false;
+      this.promptStarted = false;
       this.modelLoading = false;
       this.models = [];
       this.currentModelIndex = -1;
       this.thinkingLoading = false;
       this.thinkingLevels = [];
       this.currentThinkingLevel = "";
+      this.images = [];
+      this.pendingImageReads = 0;
       this._setModelPlaceholder(this.strings.modelOpenHint);
       this._setThinkingPlaceholder(this.strings.thinkingOpenHint);
       this.cursor = 0;
@@ -505,6 +683,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.lastErrorContent = null;
       this.openButton.textContent = this.strings.open;
       this._cancelPoll();
+      this._renderImages();
       this._clearTranscript();
       if (!selection) {
         this.paperTitle.textContent = this.strings.noPaper;
@@ -870,11 +1049,12 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           continue;
         }
         const text = contentText(message.content);
-        if (text) {
-          this._addMessage(message.role, text);
+        const displayText = displayContentText(message.content, this.strings);
+        if (displayText) {
+          this._addMessage(message.role, displayText);
         }
         if (message.role === "user") {
-          associatedQuestion = text.trim() || null;
+          associatedQuestion = displayText.trim() || null;
           finalAnswer = null;
           finalQuestion = null;
         } else if (isFinalAssistantMessage(message)) {
@@ -893,7 +1073,8 @@ var ZoteroAgentBridgePiChatPanel = (() => {
 
     async send() {
       const message = this.input.value.trim();
-      if (!message || !this.selection || this.sending || this.streaming || this.disposed) {
+      const images = this.images.map(({ type, data, mimeType }) => ({ type, data, mimeType }));
+      if ((!message && !images.length) || !this.selection || this.sending || this.streaming || this.pendingImageReads || this.disposed) {
         return;
       }
       this.sending = true;
@@ -906,21 +1087,32 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         scope = this._captureScope();
         this.sending = true;
         this._updateControls();
-        this._addMessage("user", message);
-        this.input.value = "";
+        const displayMessage = [
+          message,
+          images.length ? this.strings.imageCount.replace("{count}", String(images.length)) : "",
+        ].filter(Boolean).join("\n");
+        this._addMessage("user", displayMessage);
         this.currentAssistant = null;
-        this.activeQuestion = message;
+        this.activeQuestion = displayMessage;
+        this.promptStarted = false;
         this.lastFinalAnswer = null;
         this.lastFinalQuestion = null;
         this.lastFinalScope = null;
         this.lastFinalDocument = null;
-        const accepted = await this.controller.bridgeRequest("POST", "/assistant/session/message", { message });
+        const accepted = await this.controller.bridgeRequest("POST", "/assistant/session/message", { message, images });
         if (!this._scopeMatches(scope)) {
           return;
         }
+        this.input.value = "";
+        this.images = [];
+        this._renderImages();
         if (accepted && accepted.context_injected) {
           this.contextInjectionRequired = false;
           this.contextUpdated = false;
+        }
+        const eventCursor = Number(accepted && accepted.event_cursor);
+        if (Number.isInteger(eventCursor) && eventCursor >= 0) {
+          this.cursor = eventCursor;
         }
         this.streaming = true;
         this._setStatus("working", this.strings.thinking);
@@ -987,7 +1179,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
               this.currentAssistantText += update.delta;
               this._scheduleAssistantRender(this.currentAssistant);
             }
-          } else if (event.type === "agent_settled") {
+          } else if (event.type === "agent_start") {
+            this.promptStarted = true;
+          } else if (event.type === "agent_settled" && this.promptStarted) {
             settled = true;
           } else if (event.type === "bridge_pi_error") {
             throw new Error(event.error && event.error.message ? event.error.message : this.strings.bridgeError);
@@ -1005,6 +1199,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         }
         if (settled) {
           this.streaming = false;
+          this.promptStarted = false;
           this.currentAssistant = null;
           this.activeQuestion = null;
           await this._loadMessages(scope);
@@ -1022,6 +1217,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           return;
         }
         this.streaming = false;
+        this.promptStarted = false;
         this.currentAssistant = null;
         this.activeQuestion = null;
         this._cancelPoll();
@@ -1043,6 +1239,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           return;
         }
         this.streaming = false;
+        this.promptStarted = false;
         this.currentAssistant = null;
         this.activeQuestion = null;
         this._cancelPoll();
@@ -1648,10 +1845,14 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     },
     __test: {
       canSaveSnapshot,
+      contentImageCount,
       contentText,
+      displayContentText,
       documentsEqual,
+      imagePayloadFromDataURL,
       isFinalAssistantMessage,
       scopesEqual,
+      shouldSendOnKeydown,
     },
   };
 })();

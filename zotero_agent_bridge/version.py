@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-BRIDGE_VERSION = "0.3.3"
+BRIDGE_VERSION = "0.3.5"
 LIFECYCLE_PROTOCOL_VERSION = 1
 DEFAULT_DISTRIBUTION = "source"
 

@@ -372,12 +372,64 @@ collapsible-section[data-pane$="-zotero-agent-bridge-pi-chat"] {
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto auto;
 }
 
 .zab-chat--deck .zab-chat__transcript {
   min-height: 0;
   max-height: calc(100vh - 315px);
+}
+
+.zab-chat__image-tray {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  gap: 6px;
+  padding: 2px 1px;
+  scrollbar-width: thin;
+}
+
+.zab-chat__image-tray[hidden] {
+  display: none;
+}
+
+.zab-chat__image-card {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 58px;
+  overflow: hidden;
+  border: 1px solid var(--zab-rule);
+  border-radius: 5px;
+  background: var(--zab-surface);
+}
+
+.zab-chat__image-preview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.zab-chat__image-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 50%;
+  background: rgba(25, 31, 38, 0.82);
+  color: #ffffff;
+  font: 700 14px/1 sans-serif;
+  cursor: default;
+}
+
+.zab-chat__image-remove:disabled {
+  opacity: 0.5;
 }
 
 .zab-chat__input {
@@ -395,7 +447,8 @@ collapsible-section[data-pane$="-zotero-agent-bridge-pi-chat"] {
 
 .zab-chat__input:focus-visible,
 .zab-chat__model-select:focus-visible,
-.zab-chat__button:focus-visible {
+.zab-chat__button:focus-visible,
+.zab-chat__image-remove:focus-visible {
   outline: 2px solid var(--zab-blue);
   outline-offset: 2px;
 }

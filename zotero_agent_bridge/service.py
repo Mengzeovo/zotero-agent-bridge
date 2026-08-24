@@ -4,10 +4,16 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 import ipaddress
 from pathlib import Path
+import re
 import threading
 from typing import Any
+from xml.etree import ElementTree as etree
 
 import markdown as markdown_lib
+from markdown.blockprocessors import BlockProcessor
+from markdown.extensions import Extension
+from markdown.inlinepatterns import InlineProcessor
+from markdown.util import AtomicString
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -113,8 +119,26 @@ def _project_assistant_messages(response: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
             )
             replacement = _project_bootstrap_text(text)
+            sanitized_images = [
+                {
+                    "type": "image",
+                    "mimeType": str(block.get("mimeType") or "image/png"),
+                }
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "image"
+            ]
             if replacement is not None:
-                message["content"] = replacement
+                message["content"] = (
+                    [{"type": "text", "text": replacement}, *sanitized_images]
+                    if sanitized_images
+                    else replacement
+                )
+            elif sanitized_images:
+                message["content"] = [
+                    dict(block)
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") != "image"
+                ] + sanitized_images
     return projected
 
 
@@ -173,6 +197,133 @@ def _markdown_inline(value: Any) -> str:
 
 def _quote_markdown(value: str) -> str:
     return "\n".join(f"> {line}" if line else ">" for line in value.splitlines())
+
+
+def _delimiter_is_escaped(value: str, index: int) -> bool:
+    backslashes = 0
+    cursor = index - 1
+    while cursor >= 0 and value[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return backslashes % 2 == 1
+
+
+def _find_math_delimiter(value: str, delimiter: str, start: int) -> int:
+    cursor = start
+    while True:
+        cursor = value.find(delimiter, cursor)
+        if cursor < 0:
+            return -1
+        if not _delimiter_is_escaped(value, cursor):
+            return cursor
+        cursor += len(delimiter)
+
+
+def _normalize_math_chunk(value: str) -> str:
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        if value[cursor] == "`":
+            end = cursor + 1
+            while end < len(value) and value[end] == "`":
+                end += 1
+            marker = value[cursor:end]
+            closing = value.find(marker, end)
+            if closing < 0:
+                output.append(value[cursor:])
+                break
+            output.append(value[cursor : closing + len(marker)])
+            cursor = closing + len(marker)
+            continue
+        converted = False
+        for opening, closing, replacement in (("\\(", "\\)", "$"), ("\\[", "\\]", "$$")):
+            if value.startswith(opening, cursor) and not _delimiter_is_escaped(value, cursor):
+                end = _find_math_delimiter(value, closing, cursor + len(opening))
+                if end >= 0:
+                    output.extend((replacement, value[cursor + len(opening) : end], replacement))
+                    cursor = end + len(closing)
+                    converted = True
+                    break
+        if converted:
+            continue
+        output.append(value[cursor])
+        cursor += 1
+    return "".join(output)
+
+
+def _normalize_note_math_delimiters(markdown_text: str) -> str:
+    """Normalize the chat renderer's TeX delimiters without touching Markdown code."""
+
+    output: list[str] = []
+    pending: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+
+    def flush_pending() -> None:
+        if pending:
+            output.append(_normalize_math_chunk("".join(pending)))
+            pending.clear()
+
+    for line in markdown_text.splitlines(keepends=True):
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence_character is not None:
+            output.append(line)
+            if fence and fence.group(1)[0] == fence_character and len(fence.group(1)) >= fence_length:
+                fence_character = None
+                fence_length = 0
+            continue
+        if fence:
+            flush_pending()
+            marker = fence.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            output.append(line)
+            continue
+        if line.startswith(("    ", "\t")):
+            flush_pending()
+            output.append(line)
+            continue
+        pending.append(line)
+    flush_pending()
+    return "".join(output)
+
+
+class _ZoteroBlockMathProcessor(BlockProcessor):
+    def test(self, parent: etree.Element, block: str) -> bool:
+        source = block.strip()
+        return (
+            len(source) >= 4
+            and source.startswith("$$")
+            and source.endswith("$$")
+            and not source.startswith("$$$")
+            and not source.endswith("$$$")
+        )
+
+    def run(self, parent: etree.Element, blocks: list[str]) -> None:
+        source = blocks.pop(0).strip()
+        element = etree.SubElement(parent, "pre", {"class": "math"})
+        element.text = AtomicString(source)
+
+
+class _ZoteroInlineMathProcessor(InlineProcessor):
+    def handleMatch(self, match: re.Match[str], data: str) -> tuple[etree.Element, int, int]:
+        element = etree.Element("span", {"class": "math"})
+        element.text = f"${match.group(1)}$"
+        return element, match.start(0), match.end(0)
+
+
+class _ZoteroNoteMathExtension(Extension):
+    def extendMarkdown(self, md: markdown_lib.Markdown) -> None:
+        md.parser.blockprocessors.register(
+            _ZoteroBlockMathProcessor(md.parser),
+            "zotero_block_math",
+            175,
+        )
+        md.inlinePatterns.register(
+            _ZoteroInlineMathProcessor(r"(?<!\\)(?<!\$)\$(?!\$)(.+?)(?<!\\)\$(?!\$)", md),
+            "zotero_inline_math",
+            175,
+        )
 
 
 def _model_label(state: dict[str, Any], configured_model: str | None) -> str | None:
@@ -557,7 +708,10 @@ class BridgeService:
         return payload, sync_status
 
     def _render_note_html(self, markdown_text: str) -> str:
-        rendered = markdown_lib.markdown(markdown_text, extensions=["extra", "fenced_code", "tables", "nl2br"])
+        rendered = markdown_lib.markdown(
+            markdown_text,
+            extensions=[_ZoteroNoteMathExtension(), "extra", "fenced_code", "tables", "nl2br"],
+        )
         return f'<div data-schema-version="9">{rendered}</div>'
 
     def _build_fallback_bundle(self, result: dict[str, Any], payload: dict[str, Any], sync_status: str) -> dict[str, Any]:
@@ -700,8 +854,12 @@ class BridgeService:
         markdown_text = request.markdown.strip()
         if request.title and not markdown_text.lstrip().startswith("#"):
             markdown_text = f"# {request.title}\n\n{markdown_text}"
+        markdown_text = _normalize_note_math_delimiters(markdown_text)
         note_html = self._render_note_html(markdown_text)
-        result = self.writer.execute("create_note", {"item_key": item_key, "note_html": note_html})
+        result = self.writer.execute(
+            "create_note",
+            {"item_key": item_key, "markdown": markdown_text, "note_html": note_html},
+        )
         bundle = self._refresh_bundle(item_key)
         item_record = self.mirror.export_bundle(bundle, note_markdown_overrides={result["note_key"]: markdown_text})
         note_record = self.mirror._load_index()["notes"].get(result["note_key"])
@@ -809,17 +967,23 @@ class BridgeService:
             context = self._active_reading_context
             if context is None:
                 raise BridgeError(409, "assistant_context_not_prepared", "Open a Zotero literature item before sending a message")
-            question = request.message.strip()
+            question = request.message
+            images = [image.model_dump(mode="json") for image in request.images]
             injection_required = pi_chat.context_injection_required(context.fingerprint)
             self._active_context_injection_required = injection_required
+            # Completed or aborted turns can leave terminal events buffered after the
+            # panel's last cursor. Start each prompt from an authoritative clean cursor
+            # so a stale agent_settled event cannot terminate polling for the new turn.
+            pi_chat.clear_events()
+            event_cursor = int(pi_chat.status().get("last_cursor") or 0)
             if injection_required:
                 prompt = _build_literature_bootstrap_prompt(context.markdown, question)
-                response = pi_chat.prompt(prompt, context_fingerprint=context.fingerprint)
+                response = pi_chat.prompt(prompt, images=images, context_fingerprint=context.fingerprint)
                 self._active_context_injection_required = False
                 self._active_context_updated = False
-                return {**response, "context_injected": True}
-            response = pi_chat.prompt(question)
-            return {**response, "context_injected": False}
+                return {**response, "context_injected": True, "event_cursor": event_cursor}
+            response = pi_chat.prompt(question, images=images)
+            return {**response, "context_injected": False, "event_cursor": event_cursor}
 
     def assistant_events(self, after: int = 0) -> AssistantEventsResponse:
         pi_chat, _ = self._require_assistant()
@@ -1007,7 +1171,10 @@ class BridgeService:
 
     def abort_assistant_session(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
-        return pi_chat.abort()
+        with self._assistant_lock:
+            response = pi_chat.abort()
+            pi_chat.clear_events()
+            return response
 
     def close_assistant_session(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()

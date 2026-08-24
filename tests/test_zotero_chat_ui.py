@@ -11,8 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "zotero_companion_addon"
+BOOTSTRAP_SCRIPT = ADDON / "bootstrap.js"
 PANEL_SCRIPT = ADDON / "chrome" / "content" / "scripts" / "pi_chat_panel.js"
 MARKDOWN_SCRIPT = ADDON / "chrome" / "content" / "scripts" / "markdown_renderer.js"
+MARKED_SCRIPT = ADDON / "chrome" / "content" / "vendor" / "marked" / "marked.umd.js"
 PANEL_STYLE = ADDON / "chrome" / "content" / "styles" / "pi_chat_panel.css"
 XPI = ROOT / "dist" / "zotero-agent-bridge-addon.xpi"
 
@@ -69,8 +71,17 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertIn("replaceChildren", panel)
         self.assertNotIn("innerHTML", panel)
         self.assertIn('update.type === "text_delta"', panel)
-        self.assertIn('event.type === "agent_settled"', panel)
-        self.assertIn("event.ctrlKey || event.metaKey", panel)
+        self.assertIn('event.type === "agent_settled" && this.promptStarted', panel)
+        self.assertIn('event.type === "agent_start"', panel)
+        self.assertIn("accepted && accepted.event_cursor", panel)
+        self.assertIn("this.cursor = eventCursor", panel)
+        self.assertIn("shouldSendOnKeydown(event)", panel)
+        self.assertNotIn("event.ctrlKey || event.metaKey", panel)
+        self.assertIn('this.input.addEventListener("paste"', panel)
+        self.assertIn("clipboard.items", panel)
+        self.assertIn("reader.readAsDataURL(file)", panel)
+        self.assertIn("{ message, images }", panel)
+        self.assertIn("this.images.length", panel)
         self.assertIn("currentIdentity === nextIdentity", panel)
         self.assertIn("this.hasPendingSelection", panel)
         self.assertIn("this.selectionGeneration", panel)
@@ -120,15 +131,90 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertNotIn("libraryDeckPanels", panel)
         self.assertNotIn("请确认 Bridge 和 Pi 已启动", panel)
 
+    def test_clipboard_image_payload_helpers_run_in_node(self) -> None:
+        script = f"""
+const assert = require('assert');
+const test = require({json.dumps(str(PANEL_SCRIPT))}).__test;
+const payload = test.imagePayloadFromDataURL('data:image/png;base64,aGVsbG8=');
+assert.deepStrictEqual(payload, {{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }});
+assert.strictEqual(test.contentImageCount([{{ type: 'text', text: 'look' }}, payload]), 1);
+assert.strictEqual(
+  test.displayContentText([{{ type: 'text', text: 'look' }}, payload], {{ imageCount: '{{count}} image(s) attached' }}),
+  'look\\n1 image(s) attached',
+);
+assert.throws(() => test.imagePayloadFromDataURL('data:image/svg+xml;base64,aGVsbG8='), /Unsupported image type/);
+assert.strictEqual(test.shouldSendOnKeydown({{ key: 'Enter', shiftKey: false, isComposing: false }}), true);
+assert.strictEqual(test.shouldSendOnKeydown({{ key: 'Enter', shiftKey: true, isComposing: false }}), false);
+assert.strictEqual(test.shouldSendOnKeydown({{ key: 'Enter', shiftKey: false, isComposing: true }}), false);
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_better_notes_markdown_conversion_uses_safe_fallback_in_node(self) -> None:
+        script = f"""
+const assert = require('assert');
+const bootstrap = require({json.dumps(str(BOOTSTRAP_SCRIPT))});
+const convert = bootstrap.__test.convertMarkdownNoteHTML;
+(async () => {{
+  const payload = {{ markdown: 'Inline $x$', note_html: '<p>fallback</p>' }};
+  const betterNotes = {{ api: {{ convert: {{ md2html: async (markdown) => {{
+    assert.strictEqual(markdown, payload.markdown);
+    return '<p><span class="math">$x$</span></p>';
+  }} }} }} }};
+  const converted = await convert(payload, betterNotes);
+  assert.strictEqual(converted.renderer, 'better-notes');
+  assert.strictEqual(converted.html, '<p><span class="math">$x$</span></p>');
+  assert.strictEqual(converted.error, null);
+
+  const unavailable = await convert(payload, null);
+  assert.strictEqual(unavailable.renderer, 'bridge');
+  assert.strictEqual(unavailable.html, payload.note_html);
+  assert.strictEqual(unavailable.error, null);
+
+  const failure = await convert(payload, {{ api: {{ convert: {{ md2html: async () => {{ throw new Error('boom'); }} }} }} }});
+  assert.strictEqual(failure.renderer, 'bridge');
+  assert.strictEqual(failure.html, payload.note_html);
+  assert.strictEqual(failure.error.message, 'boom');
+
+  const empty = await convert(payload, {{ api: {{ convert: {{ md2html: async () => '   ' }} }} }});
+  assert.strictEqual(empty.renderer, 'bridge');
+  assert.strictEqual(empty.html, payload.note_html);
+  assert.match(empty.error.message, /empty note HTML/);
+}})().catch((error) => {{
+  console.error(error);
+  process.exitCode = 1;
+}});
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_markdown_renderer_guards_and_math_detection_run_in_node(self) -> None:
         renderer = MARKDOWN_SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("innerHTML", renderer)
         self.assertIn('gfm: true', renderer)
         self.assertIn('trust: false', renderer)
         self.assertIn('throwOnError: false', renderer)
+        problematic = r"""意思是：
+
+\[
+\text{接收功率}
+=
+\text{发射功率}\times\text{湍流衰落}
+\]
+
+因为 \(L_{\mathrm{fog}}\) 会减小。"""
+        protected_code = "Code `\\(raw\\)`\n\n```tex\n\\[raw\\]\n```"
         script = f"""
 const assert = require('assert');
 const renderer = require({json.dumps(str(MARKDOWN_SCRIPT))});
+const markedModule = require({json.dumps(str(MARKED_SCRIPT))});
+const marked = markedModule.marked || markedModule;
 const test = renderer.__test;
 assert.strictEqual(test.safeHref('javascript:alert(1)'), null);
 assert.strictEqual(test.safeHref('data:text/html,x'), null);
@@ -145,6 +231,46 @@ assert.deepStrictEqual(test.splitInlineMath('A \\\\(x+y\\\\) B'), [
   {{ type: 'math', value: 'x+y' }},
   {{ type: 'text', value: ' B' }},
 ]);
+const prepared = test.prepareMarkdown(marked, {json.dumps(problematic, ensure_ascii=False)});
+assert.strictEqual(prepared.math.length, 2);
+assert.strictEqual(prepared.math[0].displayMode, true);
+assert.match(prepared.math[0].source, /接收功率[\\s\\S]*\\n=\\n[\\s\\S]*湍流衰落/);
+assert.strictEqual(prepared.math[1].displayMode, false);
+assert.strictEqual(prepared.math[1].source, {json.dumps(r'L_{\mathrm{fog}}')});
+assert.strictEqual(prepared.tokens.some((token) => token.type === 'heading'), false);
+const calls = [];
+const makeNode = (tag) => ({{
+  tag,
+  children: [],
+  className: '',
+  dataset: {{}},
+  style: {{}},
+  append(...nodes) {{ this.children.push(...nodes); }},
+  replaceChildren(...nodes) {{ this.children = nodes; }},
+  setAttribute() {{}},
+}});
+const doc = {{
+  createElementNS: (_namespace, tag) => makeNode(tag),
+  createDocumentFragment: () => makeNode('#fragment'),
+  createTextNode: (value) => ({{ tag: '#text', value }}),
+}};
+const target = makeNode('div');
+target.ownerDocument = doc;
+renderer.create({{
+  marked,
+  katex: {{ render: (source, _container, options) => calls.push({{ source, displayMode: options.displayMode }}) }},
+}}).render(target, {json.dumps(problematic, ensure_ascii=False)});
+assert.deepStrictEqual(calls, [
+  {{ source: prepared.math[0].source, displayMode: true }},
+  {{ source: {json.dumps(r'L_{\mathrm{fog}}')}, displayMode: false }},
+]);
+const code = test.protectMath({json.dumps(protected_code)});
+assert.strictEqual(code.math.length, 0);
+assert.strictEqual(code.source, {json.dumps(protected_code)});
+const dollarPrepared = test.prepareMarkdown(marked, '$$\\na=b\\n$$ and $x+y$');
+assert.strictEqual(dollarPrepared.math.length, 2);
+assert.strictEqual(dollarPrepared.math[0].displayMode, true);
+assert.strictEqual(dollarPrepared.math[1].displayMode, false);
 """
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
@@ -276,6 +402,9 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         self.assertIn(".zab-chat--deck .zab-chat__transcript {\n  min-height: 0;\n  max-height: calc(100vh - 315px);\n}", styles)
         self.assertIn(".zab-chat__model-select", styles)
         self.assertIn(".zab-chat__model-select:focus-visible", styles)
+        self.assertIn(".zab-chat__image-tray", styles)
+        self.assertIn(".zab-chat__image-preview", styles)
+        self.assertIn(".zab-chat__image-remove", styles)
         self.assertNotIn("linear-gradient", styles)
         zh = (ADDON / "locale" / "zh-CN" / "zotero-agent-bridge.ftl").read_text(encoding="utf-8")
         en = (ADDON / "locale" / "en-US" / "zotero-agent-bridge.ftl").read_text(encoding="utf-8")
@@ -305,7 +434,7 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
             encoding="utf-8-sig"
         )
         version = manifest["version"]
-        self.assertEqual(version, "0.3.3")
+        self.assertEqual(version, "0.3.5")
         zotero_manifest = manifest["applications"]["zotero"]
         self.assertEqual(zotero_manifest["strict_max_version"], "9.0.*")
         self.assertEqual(
@@ -350,9 +479,9 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
             }
             self.assertTrue(expected.issubset(names), sorted(expected - names))
             manifest = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
-            self.assertEqual(manifest["version"], "0.3.3")
+            self.assertEqual(manifest["version"], "0.3.5")
             bundle_manifest = json.loads(archive.read("bridge/windows-x64/bridge-manifest.json").decode("utf-8"))
-            self.assertEqual(bundle_manifest["bridge_version"], "0.3.3")
+            self.assertEqual(bundle_manifest["bridge_version"], "0.3.5")
             self.assertEqual(bundle_manifest["protocol_version"], 1)
             self.assertEqual(bundle_manifest["distribution"], "xpi-bundled")
             self.assertEqual(manifest["applications"]["zotero"]["strict_max_version"], "9.0.*")
@@ -362,7 +491,7 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         self.assertEqual(update["version"], manifest["version"])
         self.assertEqual(
             update["update_link"],
-            "https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v0.3.3-beta/zotero-agent-bridge-addon-0.3.3.xpi",
+            "https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v0.3.5-beta/zotero-agent-bridge-addon-0.3.5.xpi",
         )
         self.assertEqual(
             update["update_hash"],

@@ -122,7 +122,11 @@ for raw in sys.stdin:
         send({"id": request_id, "type": "response", "command": command_type, "success": True, "data": {"messages": messages}})
     elif command_type == "prompt":
         message = command.get("message", "")
-        messages.append({"role": "user", "content": message})
+        images = command.get("images") or []
+        content = message
+        if images:
+            content = ([{"type": "text", "text": message}] if message else []) + images
+        messages.append({"role": "user", "content": content})
         streaming = True
         if message == "delay":
             time.sleep(10)
@@ -135,7 +139,7 @@ for raw in sys.stdin:
             sys.stdout.write("{not-json}\n")
             sys.stdout.flush()
         if message != "hold":
-            answer = f"echo:{message}"
+            answer = f"echo:{message}" + (f":images={len(images)}" if images else "")
             messages.append({"role": "assistant", "content": [{"type": "text", "text": answer}]})
             send({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": answer}})
             streaming = False
@@ -263,6 +267,21 @@ class PiChatManagerTest(unittest.TestCase):
         self.assertIn("--no-tools", argv)
         self.assertIn("--no-approve", argv)
         self.assertNotIn("summarize", argv)
+
+    def test_prompt_sends_rpc_image_content_and_allows_image_only_message(self) -> None:
+        image = {
+            "type": "image",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZkGQAAAAASUVORK5CYII=",
+            "mimeType": "image/png",
+        }
+        manager = self.manager()
+        manager.open_item(ITEM_A, self.pdf_a)
+        accepted = manager.prompt("", images=[image])
+        self.assertTrue(accepted["success"])
+        self.assertTrue(manager.wait_until_idle())
+        messages = manager.get_messages()["data"]["messages"]
+        self.assertEqual(messages[0]["content"], [image])
+        self.assertEqual(messages[1]["content"][0]["text"], "echo::images=1")
 
     def test_available_models_switch_and_future_launch_preference(self) -> None:
         manager = self.manager()

@@ -50,4 +50,6 @@ Supported commands:
 - `attach_linked_pdf`
 - `create_note`
 
+`create_note` accepts both the normalized Markdown source in `payload.markdown` and pre-rendered fallback HTML in `payload.note_html`. When Better Notes is installed, the add-on uses `Zotero.BetterNotes.api.convert.md2html()` so math, tables, and other supported rich-text nodes use Zotero's native note schema. If conversion is unavailable or fails, `note_html` is saved instead.
+
 Responses are written to `responses/<request_id>.json`.
