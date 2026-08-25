@@ -159,6 +159,7 @@ The panel must continue to:
 
 The following suites are the current evidence for this baseline and must remain green or be replaced by narrower tests before their covered code is removed:
 
+- `tests/test_pi_only_contract.py`
 - `tests/test_assistant_http.py`
 - `tests/test_pi_chat.py`
 - `tests/test_reading_context.py`
