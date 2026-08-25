@@ -656,10 +656,10 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertEqual(self.pi_chat.events, [])
 
         closed = self.client.post("/assistant/session/close", headers=self.headers)
-        self.assertEqual(closed.status_code, 200)
-        self.assertEqual(closed.json(), {"closed": True})
+        self.assertEqual(closed.status_code, 410)
+        self.assertEqual(closed.json()["error"]["code"], "feature_retired")
         status = self.client.get("/assistant/session/status", headers=self.headers)
-        self.assertFalse(status.json()["context_prepared"])
+        self.assertTrue(status.json()["context_prepared"])
 
     def test_message_accepts_clipboard_images_and_redacts_base64_from_history(self) -> None:
         image_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZkGQAAAAASUVORK5CYII="
@@ -982,7 +982,9 @@ Keep code `\(literal\)` unchanged.
         self.assertEqual(first.status_code, 200)
         self.assertTrue(first.json()["context_injected"])
 
-        self.assertEqual(self.client.post("/assistant/session/close", headers=self.headers).status_code, 200)
+        retired_close = self.client.post("/assistant/session/close", headers=self.headers)
+        self.assertEqual(retired_close.status_code, 410)
+        self.assertEqual(retired_close.json()["error"]["code"], "feature_retired")
         resumed = self._open()
         self.assertEqual(resumed.status_code, 200)
         self.assertFalse(resumed.json()["context_injection_required"])
@@ -1212,8 +1214,8 @@ Keep code `\(literal\)` unchanged.
         self.pi_chat.reap_result = False
         self.pi_chat.events = [{"cursor": 9, "type": "agent_settled"}]
         self.assertEqual(self._open().status_code, 200)
-        closed = self.client.post("/assistant/session/close", headers=self.headers)
-        self.assertEqual(closed.status_code, 200)
+        reset = self.client.post("/assistant/session/reset", headers=self.headers)
+        self.assertEqual(reset.status_code, 200)
         events = self.client.get("/assistant/session/events?after=0", headers=self.headers)
         self.assertEqual(events.json()["events"], [])
 

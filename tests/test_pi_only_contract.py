@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 
 from zotero_agent_bridge.models import (
     ASSISTANT_IMAGE_MIME_TYPES,
@@ -100,6 +101,30 @@ class PiOnlyContractTest(unittest.TestCase):
                 route = self.routes[route_pair]
                 self.assertGreaterEqual(len(route.dependencies), 1)
                 self.assertGreaterEqual(len(route.dependant.dependencies), 1)
+
+    def test_every_retired_route_is_an_authenticated_side_effect_free_410_shell(self) -> None:
+        settings = SimpleNamespace(api_token="pi-contract-token")
+        service = SimpleNamespace(settings=settings)
+        app = create_app(settings=settings, service=service, lifecycle=SimpleNamespace())
+        client = TestClient(app)
+        expected_error = self.policy["transition_error"]
+        for method, route_path in sorted(self.retired):
+            concrete_path = re.sub(r"\{[^}]+\}", "RETIREDKEY", route_path)
+            with self.subTest(method=method, path=route_path, auth="missing"):
+                response = client.request(method, concrete_path, json={})
+                self.assertEqual(response.status_code, 401)
+            with self.subTest(method=method, path=route_path, auth="valid"):
+                response = client.request(
+                    method,
+                    concrete_path,
+                    headers={"X-Bridge-Token": settings.api_token},
+                    json={},
+                )
+                self.assertEqual(response.status_code, expected_error["http_status"], response.text)
+                payload = response.json()["error"]
+                self.assertEqual(payload["code"], expected_error["code"])
+                self.assertEqual(payload["message"], expected_error["message"])
+                self.assertEqual(payload["details"]["product_scope"], self.policy["product_scope"])
 
     def test_pi_panel_calls_exact_retained_assistant_surface(self) -> None:
         expected = {route for route in self.retained if route[1].startswith("/assistant/")}
