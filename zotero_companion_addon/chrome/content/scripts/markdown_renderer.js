@@ -69,7 +69,11 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
         const end = text.indexOf("\\)", index + 2);
         if (end !== -1) {
           pushPlain(index);
-          parts.push({ type: "math", value: text.slice(index + 2, end) });
+          parts.push({
+            type: "math",
+            value: text.slice(index + 2, end),
+            raw: text.slice(index, end + 2),
+          });
           index = end + 2;
           plainStart = index;
           continue;
@@ -79,7 +83,11 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
         const end = findClosingDollar(text, index + 1);
         if (end !== -1 && end > index + 1) {
           pushPlain(index);
-          parts.push({ type: "math", value: text.slice(index + 1, end) });
+          parts.push({
+            type: "math",
+            value: text.slice(index + 1, end),
+            raw: text.slice(index, end + 1),
+          });
           index = end + 1;
           plainStart = index;
           continue;
@@ -157,9 +165,13 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
     const output = [];
     let cursor = 0;
     let lineStart = true;
-    const stash = (source, displayMode) => {
+    const stash = (source, displayMode, raw) => {
       const index = math.length;
-      math.push({ source: String(source || "").trim(), displayMode: Boolean(displayMode) });
+      math.push({
+        source: String(source || "").trim(),
+        displayMode: Boolean(displayMode),
+        raw: String(raw || ""),
+      });
       output.push(mathMarker(index));
     };
     while (cursor < text.length) {
@@ -219,7 +231,11 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
           ? findClosingDollar(text, cursor + opening.length)
           : findClosingDelimiter(text, closing, cursor + opening.length);
         if (end !== -1 && end > cursor + opening.length) {
-          stash(text.slice(cursor + opening.length, end), displayMode);
+          stash(
+            text.slice(cursor + opening.length, end),
+            displayMode,
+            text.slice(cursor, end + closing.length),
+          );
           cursor = end + closing.length;
           lineStart = false;
           continue;
@@ -251,7 +267,12 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
       }
       const entry = entries[Number(match[1])];
       if (entry) {
-        parts.push({ type: "math", value: entry.source, displayMode: entry.displayMode });
+        parts.push({
+          type: "math",
+          value: entry.source,
+          displayMode: entry.displayMode,
+          raw: entry.raw,
+        });
       } else {
         parts.push({ type: "text", value: match[0] });
       }
@@ -269,6 +290,109 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
       tokens: markedLexer(markedLibrary, protectedMath.source),
       math: protectedMath.math,
     };
+  }
+
+  function mathElementForNode(node, root) {
+    const element = node && typeof node.closest === "function"
+      ? node
+      : node && node.parentElement;
+    const math = element && typeof element.closest === "function"
+      ? element.closest("[data-zab-math-source]")
+      : null;
+    if (!math || !root || typeof root.contains !== "function" || !root.contains(math)) {
+      return null;
+    }
+    return math;
+  }
+
+  function mathSource(element) {
+    const source = element && element.dataset && element.dataset.zabMathSource;
+    return typeof source === "string" ? source : null;
+  }
+
+  function replaceMathWithSource(doc, fragment) {
+    const elements = fragment && typeof fragment.querySelectorAll === "function"
+      ? [...fragment.querySelectorAll("[data-zab-math-source]")]
+      : [];
+    let replaced = 0;
+    for (const element of elements) {
+      const source = mathSource(element);
+      if (source === null || typeof element.replaceChildren !== "function") {
+        continue;
+      }
+      element.replaceChildren(doc.createTextNode(source));
+      replaced += 1;
+    }
+    return replaced;
+  }
+
+  function fragmentPlainText(doc, fragment) {
+    const parent = doc && (doc.body || doc.documentElement);
+    if (!parent || typeof parent.append !== "function") {
+      return String(fragment && fragment.textContent || "");
+    }
+    const host = createElement(doc, "div");
+    host.setAttribute("aria-hidden", "true");
+    host.style.position = "fixed";
+    host.style.left = "-100000px";
+    host.style.top = "0";
+    host.style.width = "max-content";
+    host.style.maxWidth = "none";
+    host.style.opacity = "0";
+    host.style.pointerEvents = "none";
+    host.style.whiteSpace = "pre-wrap";
+    host.append(fragment);
+    parent.append(host);
+    try {
+      return typeof host.innerText === "string" ? host.innerText : String(host.textContent || "");
+    } finally {
+      host.remove();
+    }
+  }
+
+  function rangeIntersectsRoot(range, root) {
+    if (!range || !root) {
+      return false;
+    }
+    if (typeof range.intersectsNode === "function") {
+      try {
+        return range.intersectsNode(root);
+      } catch (error) {}
+    }
+    return root === range.startContainer
+      || root === range.endContainer
+      || (typeof root.contains === "function"
+        && (root.contains(range.startContainer) || root.contains(range.endContainer)));
+  }
+
+  function selectionTextWithMath(doc, root, selection) {
+    if (!doc || !root || !selection || selection.isCollapsed || !selection.rangeCount) {
+      return null;
+    }
+    const parts = [];
+    let containsMath = false;
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      if (!rangeIntersectsRoot(range, root)) {
+        continue;
+      }
+      const startMath = mathElementForNode(range.startContainer, root);
+      const endMath = mathElementForNode(range.endContainer, root);
+      if (startMath && startMath === endMath) {
+        const source = mathSource(startMath);
+        if (source !== null) {
+          parts.push(source);
+          containsMath = true;
+          continue;
+        }
+      }
+      const fragment = range.cloneContents();
+      if (replaceMathWithSource(doc, fragment)) {
+        containsMath = true;
+      }
+      parts.push(fragmentPlainText(doc, fragment));
+    }
+    return containsMath ? parts.join("\n") : null;
   }
 
   class Renderer {
@@ -292,6 +416,22 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
       this.mathEntries = [];
     }
 
+    handleCopy(event, root) {
+      const clipboard = event && event.clipboardData;
+      const doc = root && root.ownerDocument;
+      const win = doc && doc.defaultView;
+      if (!clipboard || typeof clipboard.setData !== "function" || !win || typeof win.getSelection !== "function") {
+        return false;
+      }
+      const text = selectionTextWithMath(doc, root, win.getSelection());
+      if (text === null) {
+        return false;
+      }
+      clipboard.setData("text/plain", text);
+      event.preventDefault();
+      return true;
+    }
+
     _renderBlocks(doc, parent, tokens) {
       for (const token of tokens || []) {
         if (!token || token.type === "space" || token.type === "def") {
@@ -311,7 +451,10 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
             ? protectedMath.source
             : blockMathSource(token.text);
           if (math !== null && math !== undefined) {
-            parent.append(this._math(doc, math, true));
+            const rawMath = protectedMath && protectedMath.displayMode
+              ? protectedMath.raw
+              : String(token.text || "").trim();
+            parent.append(this._math(doc, math, true, rawMath));
           } else {
             const paragraph = createElement(doc, "p");
             this._renderInline(doc, paragraph, token.tokens || [{ type: "text", text: token.text || "" }]);
@@ -373,12 +516,12 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
           const protectedParts = splitProtectedMath(token.text || token.raw || "", this.mathEntries || []);
           for (const protectedPart of protectedParts) {
             if (protectedPart.type === "math") {
-              parent.append(this._math(doc, protectedPart.value, false));
+              parent.append(this._math(doc, protectedPart.value, false, protectedPart.raw));
               continue;
             }
             for (const part of splitInlineMath(protectedPart.value)) {
               parent.append(part.type === "math"
-                ? this._math(doc, part.value, false)
+                ? this._math(doc, part.value, false, part.raw)
                 : doc.createTextNode(part.value));
             }
           }
@@ -496,13 +639,16 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
       return wrapper;
     }
 
-    _math(doc, source, displayMode) {
+    _math(doc, source, displayMode, rawSource = null) {
       const container = createElement(
         doc,
         displayMode ? "div" : "span",
         displayMode ? "zab-markdown__math zab-markdown__math--block" : "zab-markdown__math zab-markdown__math--inline",
       );
       const tex = String(source || "").trim();
+      container.dataset.zabMathSource = rawSource === null || rawSource === undefined
+        ? displayMode ? `$$${tex}$$` : `$${tex}$`
+        : String(rawSource);
       if (!tex) {
         return container;
       }
@@ -533,7 +679,9 @@ var ZoteroAgentBridgeMarkdownRenderer = (() => {
       blockMathSource,
       prepareMarkdown,
       protectMath,
+      rangeIntersectsRoot,
       safeHref,
+      selectionTextWithMath,
       splitInlineMath,
       splitProtectedMath,
     },

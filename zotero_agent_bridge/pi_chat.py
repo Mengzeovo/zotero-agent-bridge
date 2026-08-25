@@ -27,6 +27,8 @@ ZOTERO_ITEM_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
 LIBRARY_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 CONTEXT_FINGERPRINT_RE = re.compile(r"^[a-f0-9]{64}$")
 PROMPT_ACCEPTED_EVENT_TYPES = {"agent_start", "message_start", "message_update", "message_end"}
+MAX_SESSION_HISTORY = 20
+SESSION_HANDLE_RE = re.compile(r"^[a-f0-9]{16}$")
 
 
 class PiChatManager:
@@ -242,6 +244,7 @@ class PiChatManager:
                         "pdf_path": canonical_pdf_path,
                         "cwd": canonical_cwd,
                         "context_fingerprint": restored_fingerprint,
+                        "history": self._record_history(record),
                         "updated_at": now_iso(),
                     }
                     self._save_index(index)
@@ -282,13 +285,340 @@ class PiChatManager:
                     retired_threads = self._stop_locked()
             self._join_threads(retired_threads)
             index = self._load_index()
-            removed = index["sessions"].pop(document_id, None)
+            record = index["sessions"].get(document_id)
+            previous_session_file = record.get("session_file") if isinstance(record, dict) else None
+            if isinstance(record, dict):
+                if isinstance(previous_session_file, str) and previous_session_file:
+                    self._archive_record_session(record, previous_session_file)
+                record["session_file"] = None
+                record["context_fingerprint"] = None
+                record["updated_at"] = now_iso()
+            else:
+                index["sessions"].pop(document_id, None)
             self._save_index(index)
             return {
                 "reset": True,
                 "document_id": document_id,
-                "previous_session_file": removed.get("session_file") if isinstance(removed, dict) else None,
+                "previous_session_file": previous_session_file,
             }
+
+    def list_session_history(
+        self,
+        item_key: str,
+        pdf_path: str | Path,
+        *,
+        library_id: str | int | None = None,
+    ) -> dict[str, Any]:
+        """List the current and archived Pi sessions for one document."""
+        item_key = self._validate_item_key(item_key)
+        normalized_library_id = self._normalize_library_id(library_id)
+        path = Path(pdf_path).expanduser().resolve()
+        if not path.is_file():
+            raise BridgeError(422, "invalid_pdf_path", "PDF path does not exist", {"pdf_path": str(path)})
+        if path.suffix.lower() != ".pdf":
+            raise BridgeError(422, "invalid_pdf_type", "Only PDF files are supported", {"pdf_path": str(path)})
+        session_identity = f"{normalized_library_id}:{item_key}" if normalized_library_id else item_key
+        canonical_pdf_path = os.path.normcase(str(path))
+        canonical_cwd = os.path.normcase(str(path.parent.resolve()))
+        document_id = hashlib.sha256(
+            f"{session_identity}\0{canonical_pdf_path}".encode("utf-8")
+        ).hexdigest()
+
+        index = self._load_index()
+        record = index["sessions"].get(document_id)
+        record_matches = (
+            isinstance(record, dict)
+            and record.get("session_identity") == session_identity
+            and record.get("pdf_path") == canonical_pdf_path
+            and record.get("cwd") == canonical_cwd
+        )
+        sessions: list[dict[str, Any]] = []
+        if record_matches:
+            current_file = record.get("session_file")
+            if isinstance(current_file, str) and current_file:
+                sessions.append(self._session_listing_entry(current_file, record, current=True))
+            for entry in reversed(self._record_history(record)):
+                session_file = entry.get("session_file")
+                if isinstance(session_file, str) and session_file:
+                    sessions.append(
+                        self._session_listing_entry(session_file, record, current=False, history_entry=entry)
+                    )
+        known = {
+            self._canonical_path(entry["session_file"])
+            for entry in sessions
+            if isinstance(entry.get("session_file"), str)
+        }
+        for orphan in self._iter_orphan_session_files(item_key, document_id, known):
+            sessions.append(self._orphan_listing_entry(orphan))
+        return {"document_id": document_id, "sessions": sessions}
+
+    def resume_session(
+        self,
+        item_key: str,
+        pdf_path: str | Path,
+        *,
+        library_id: str | int | None = None,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Point one document back at an archived session file so the next open resumes it."""
+        item_key = self._validate_item_key(item_key)
+        normalized_library_id = self._normalize_library_id(library_id)
+        session_id = str(session_id or "").strip().lower()
+        if not SESSION_HANDLE_RE.fullmatch(session_id):
+            raise BridgeError(422, "invalid_session_id", "session_id must be a 16-character hex session handle")
+        path = Path(pdf_path).expanduser().resolve()
+        if not path.is_file():
+            raise BridgeError(422, "invalid_pdf_path", "PDF path does not exist", {"pdf_path": str(path)})
+        if path.suffix.lower() != ".pdf":
+            raise BridgeError(422, "invalid_pdf_type", "Only PDF files are supported", {"pdf_path": str(path)})
+        session_identity = f"{normalized_library_id}:{item_key}" if normalized_library_id else item_key
+        canonical_pdf_path = os.path.normcase(str(path))
+        canonical_cwd = os.path.normcase(str(path.parent.resolve()))
+        document_id = hashlib.sha256(
+            f"{session_identity}\0{canonical_pdf_path}".encode("utf-8")
+        ).hexdigest()
+
+        with self._lifecycle_lock, self._admission_lock:
+            with self._lock:
+                if self._active_document_id == document_id and self._streaming:
+                    raise BridgeError(
+                        409,
+                        "pi_session_busy",
+                        "Pi is generating a response. Abort it or wait before switching sessions.",
+                        {"active_item_key": self._active_item_key},
+                    )
+            index = self._load_index()
+            record = index["sessions"].get(document_id)
+            record_matches = (
+                isinstance(record, dict)
+                and record.get("session_identity") == session_identity
+                and record.get("pdf_path") == canonical_pdf_path
+                and record.get("cwd") == canonical_cwd
+            )
+            if not record_matches:
+                record = None
+            try:
+                target_path = self._resolve_session_target(
+                    record,
+                    session_id,
+                    item_key=item_key,
+                    document_id=document_id,
+                )
+            except BridgeError as exc:
+                if exc.code != "pi_session_not_found":
+                    raise
+                message = (
+                    "The requested session is not in this document's history"
+                    if record is not None
+                    else "No session history exists for this document"
+                )
+                raise BridgeError(404, "pi_session_not_found", message) from exc
+            if not target_path.is_file():
+                raise BridgeError(404, "pi_session_file_missing", "The archived Pi session file no longer exists")
+            session_dir = Path(self.pi.session_dir).expanduser().resolve()
+            try:
+                target_path.relative_to(session_dir)
+            except ValueError as exc:
+                raise BridgeError(
+                    422,
+                    "pi_session_outside_session_dir",
+                    "The archived Pi session file is outside the configured session directory",
+                ) from exc
+            if record is None:
+                record = {
+                    "item_key": item_key,
+                    "library_id": normalized_library_id,
+                    "session_identity": session_identity,
+                    "document_id": document_id,
+                    "pdf_path": canonical_pdf_path,
+                    "cwd": canonical_cwd,
+                    "session_file": None,
+                    "context_fingerprint": None,
+                    "history": [],
+                    "updated_at": now_iso(),
+                }
+                index["sessions"][document_id] = record
+
+            retired_threads: list[threading.Thread] = []
+            with self._lock:
+                if self._active_document_id == document_id:
+                    retired_threads = self._stop_locked()
+            self._join_threads(retired_threads)
+
+            current_file = record.get("session_file")
+            if (
+                isinstance(current_file, str)
+                and current_file
+                and self._canonical_path(current_file) != self._canonical_path(target_path)
+            ):
+                self._archive_record_session(record, current_file)
+                history = self._record_history(record)
+            record["history"] = [
+                entry
+                for entry in self._record_history(record)
+                if not (
+                    isinstance(entry.get("session_file"), str)
+                    and self._session_handle(entry["session_file"]) == session_id
+                )
+            ]
+            record["session_file"] = str(target_path)
+            record["context_fingerprint"] = None
+            record["updated_at"] = now_iso()
+            self._save_index(index)
+            return {
+                "resumed": True,
+                "document_id": document_id,
+                "session_file": str(target_path),
+            }
+
+    @staticmethod
+    def _session_handle(path_value: str | Path) -> str:
+        canonical = os.path.normcase(str(Path(str(path_value)).expanduser().resolve()))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _read_session_name(path: Path, *, max_bytes: int = 65_536) -> str | None:
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                chunk = handle.read(max_bytes)
+        except OSError:
+            return None
+        for line in chunk.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(entry, dict) and entry.get("type") == "session_info":
+                name = entry.get("name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+        return None
+
+    def _iter_orphan_session_files(
+        self,
+        item_key: str,
+        document_id: str,
+        known_canonical_paths: set[str],
+    ) -> list[Path]:
+        expected_name = f"zotero-{item_key}-{document_id[:8]}"
+        session_dir = Path(self.pi.session_dir).expanduser().resolve()
+        if not session_dir.is_dir():
+            return []
+        orphans: list[Path] = []
+        try:
+            candidates = sorted(session_dir.glob("*.jsonl"))
+        except OSError:
+            return []
+        for candidate in candidates:
+            try:
+                if not candidate.is_file():
+                    continue
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if self._canonical_path(resolved) in known_canonical_paths:
+                continue
+            if self._read_session_name(resolved) == expected_name:
+                orphans.append(resolved)
+        return orphans
+
+    def _orphan_listing_entry(self, path: Path) -> dict[str, Any]:
+        try:
+            modified = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime))
+        except OSError:
+            modified = None
+        return {
+            "session_id": self._session_handle(path),
+            "session_file": str(path),
+            "current": False,
+            "available": path.is_file(),
+            "updated_at": modified,
+            "archived_at": None,
+            "orphan": True,
+        }
+
+    def _resolve_session_target(
+        self,
+        record: dict[str, Any] | None,
+        session_id: str,
+        *,
+        item_key: str,
+        document_id: str,
+    ) -> Path:
+        history = self._record_history(record) if isinstance(record, dict) else []
+        target = next(
+            (
+                entry
+                for entry in history
+                if isinstance(entry.get("session_file"), str)
+                and self._session_handle(entry["session_file"]) == session_id
+            ),
+            None,
+        )
+        if target is not None:
+            return Path(target["session_file"]).expanduser().resolve()
+        known: set[str] = set()
+        if isinstance(record, dict):
+            current_file = record.get("session_file")
+            if isinstance(current_file, str) and current_file:
+                known.add(self._canonical_path(current_file))
+            known.update(
+                self._canonical_path(entry["session_file"])
+                for entry in history
+                if isinstance(entry.get("session_file"), str)
+            )
+        for orphan in self._iter_orphan_session_files(item_key, document_id, known):
+            if self._session_handle(orphan) == session_id:
+                return orphan
+        raise BridgeError(404, "pi_session_not_found", "The requested session is not in this document's history")
+
+    @staticmethod
+    def _record_history(record: dict[str, Any]) -> list[dict[str, Any]]:
+        history = record.get("history")
+        if not isinstance(history, list):
+            return []
+        return [dict(entry) for entry in history if isinstance(entry, dict)]
+
+    def _session_listing_entry(
+        self,
+        session_file: str,
+        record: dict[str, Any],
+        *,
+        current: bool,
+        history_entry: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        path = Path(session_file).expanduser().resolve()
+        entry = {
+            "session_id": self._session_handle(session_file),
+            "session_file": str(path),
+            "current": current,
+            "available": path.is_file(),
+            "updated_at": (history_entry or {}).get("last_used_at") or record.get("updated_at"),
+            "archived_at": (history_entry or {}).get("archived_at"),
+        }
+        return entry
+
+    def _archive_record_session(self, record: dict[str, Any], session_file: str) -> None:
+        canonical = self._canonical_path(session_file)
+        history = [
+            entry
+            for entry in self._record_history(record)
+            if not (
+                isinstance(entry.get("session_file"), str)
+                and self._canonical_path(entry["session_file"]) == canonical
+            )
+        ]
+        history.append(
+            {
+                "session_file": str(Path(session_file).expanduser().resolve()),
+                "archived_at": now_iso(),
+                "last_used_at": record.get("updated_at"),
+            }
+        )
+        record["history"] = history[-MAX_SESSION_HISTORY:]
 
     def context_injection_required(self, fingerprint: str) -> bool:
         """Return whether the active persisted Pi session lacks this exact reading context."""

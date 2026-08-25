@@ -99,6 +99,10 @@ class AssistantSessionOpenRequest(BaseModel):
     attachment_key: str | None = None
 
 
+class AssistantSessionResumeRequest(BaseModel):
+    session_id: str = Field(min_length=16, max_length=16, pattern=r"^[a-f0-9]{16}$")
+
+
 ASSISTANT_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 ASSISTANT_MAX_IMAGES = 4
 ASSISTANT_MAX_IMAGE_BYTES = 10 * 1024 * 1024

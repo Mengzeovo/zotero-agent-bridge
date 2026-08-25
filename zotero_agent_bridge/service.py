@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 from copy import deepcopy
 import ipaddress
+import json
 from pathlib import Path
 import re
 import threading
@@ -32,6 +33,7 @@ from .models import (
     AssistantSaveNoteResponse,
     AssistantSessionOpenRequest,
     AssistantSessionOpenResponse,
+    AssistantSessionResumeRequest,
     AssistantThinkingLevelRequest,
     AttachLinkedPdfRequest,
     CollectionRecord,
@@ -97,6 +99,68 @@ def _project_bootstrap_text(value: str) -> str | None:
         return _CONTEXT_LOADED_MESSAGE
     question = value.rsplit(_QUESTION_BEGIN, 1)[1].split(_QUESTION_END, 1)[0].strip()
     return question or _CONTEXT_LOADED_MESSAGE
+
+
+def _session_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("text"))
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _session_file_preview(path_value: str, *, max_chars: int = 96) -> dict[str, Any]:
+    """Extract the first user question and message counts from a Pi JSONL session file."""
+    info: dict[str, Any] = {
+        "preview": None,
+        "user_messages": 0,
+        "assistant_messages": 0,
+        "started_at": None,
+    }
+    try:
+        path = Path(path_value)
+        if path.stat().st_size > 64 * 1024 * 1024:
+            return info
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                entry_type = entry.get("type")
+                if entry_type == "session":
+                    if not info["started_at"] and isinstance(entry.get("timestamp"), str):
+                        info["started_at"] = entry["timestamp"]
+                    continue
+                if entry_type != "message":
+                    continue
+                message = entry.get("message")
+                if not isinstance(message, dict):
+                    continue
+                role = message.get("role")
+                if role == "user":
+                    info["user_messages"] += 1
+                    if info["preview"] is None:
+                        text = _session_message_text(message)
+                        projected = _project_bootstrap_text(text)
+                        candidate = projected if projected is not None else text
+                        candidate = " ".join(str(candidate).split())
+                        info["preview"] = candidate[:max_chars] or None
+                elif role == "assistant":
+                    info["assistant_messages"] += 1
+    except OSError:
+        return info
+    return info
 
 
 def _project_assistant_messages(response: dict[str, Any]) -> dict[str, Any]:
@@ -186,6 +250,80 @@ def _safe_note_title(value: str | None) -> str:
 
 def _escape_raw_html(value: str) -> str:
     return value.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_chunk_preserving_math(value: str) -> str:
+    """Escape raw HTML in prose while keeping code spans and TeX math segments intact."""
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        if value[cursor] == "`":
+            end = cursor + 1
+            while end < len(value) and value[end] == "`":
+                end += 1
+            marker = value[cursor:end]
+            closing = value.find(marker, end)
+            if closing >= 0:
+                output.append(value[cursor : closing + len(marker)])
+                cursor = closing + len(marker)
+                continue
+        if value.startswith("$$", cursor) and not _delimiter_is_escaped(value, cursor):
+            end = _find_math_delimiter(value, "$$", cursor + 2)
+            if end >= 0:
+                output.append(value[cursor : end + 2])
+                cursor = end + 2
+                continue
+        if (
+            value[cursor] == "$"
+            and not value.startswith("$$", cursor)
+            and not _delimiter_is_escaped(value, cursor)
+        ):
+            end = _find_math_delimiter(value, "$", cursor + 1)
+            if end > cursor + 1:
+                output.append(value[cursor : end + 1])
+                cursor = end + 1
+                continue
+        char = value[cursor]
+        output.append("&lt;" if char == "<" else "&gt;" if char == ">" else char)
+        cursor += 1
+    return "".join(output)
+
+
+def _escape_markdown_text_preserving_math(value: str) -> str:
+    """Escape raw HTML in prose only; fenced/indented code and TeX math keep their raw text."""
+    normalized = _normalize_note_math_delimiters(value)
+    output: list[str] = []
+    pending: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+
+    def flush_pending() -> None:
+        if pending:
+            output.append(_escape_chunk_preserving_math("".join(pending)))
+            pending.clear()
+
+    for line in normalized.splitlines(keepends=True):
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence_character is not None:
+            output.append(line)
+            if fence and fence.group(1)[0] == fence_character and len(fence.group(1)) >= fence_length:
+                fence_character = None
+                fence_length = 0
+            continue
+        if fence:
+            flush_pending()
+            marker = fence.group(1)
+            fence_character = marker[0]
+            fence_length = len(marker)
+            output.append(line)
+            continue
+        if line.startswith(("    ", "\t")):
+            flush_pending()
+            output.append(line)
+            continue
+        pending.append(line)
+    flush_pending()
+    return "".join(output)
 
 
 def _markdown_inline(value: Any) -> str:
@@ -302,7 +440,7 @@ class _ZoteroBlockMathProcessor(BlockProcessor):
     def run(self, parent: etree.Element, blocks: list[str]) -> None:
         source = blocks.pop(0).strip()
         element = etree.SubElement(parent, "pre", {"class": "math"})
-        element.text = AtomicString(source)
+        element.text = AtomicString(source.replace("&", "&amp;").replace("<", "&lt;"))
 
 
 class _ZoteroInlineMathProcessor(InlineProcessor):
@@ -1009,6 +1147,71 @@ class BridgeService:
         pi_chat, _ = self._require_assistant()
         return _project_assistant_messages(pi_chat.get_messages())
 
+    def assistant_session_history(self) -> dict[str, Any]:
+        pi_chat, _ = self._require_assistant()
+        with self._assistant_lock:
+            context = self._active_reading_context
+            if context is None:
+                raise BridgeError(409, "assistant_context_not_prepared", "Open a Zotero literature item before listing its sessions")
+            listing = pi_chat.list_session_history(
+                context.item_key,
+                context.pdf_path,
+                library_id=context.library_id,
+            )
+            sessions = []
+            for entry in listing["sessions"]:
+                info = _session_file_preview(entry["session_file"]) if entry.get("available") else None
+                sessions.append(
+                    {
+                        "session_id": entry["session_id"],
+                        "current": bool(entry.get("current")),
+                        "available": bool(entry.get("available")),
+                        "updated_at": entry.get("updated_at"),
+                        "archived_at": entry.get("archived_at"),
+                        "orphan": bool(entry.get("orphan")),
+                        "preview": info["preview"] if info else None,
+                        "user_messages": info["user_messages"] if info else 0,
+                        "assistant_messages": info["assistant_messages"] if info else 0,
+                        "started_at": info["started_at"] if info else None,
+                    }
+                )
+            return {"document_id": listing["document_id"], "sessions": sessions}
+
+    def resume_assistant_session(self, request: AssistantSessionResumeRequest) -> AssistantSessionOpenResponse:
+        pi_chat, _ = self._require_assistant()
+        with self._assistant_lock:
+            context = self._active_reading_context
+            if context is None:
+                raise BridgeError(409, "assistant_context_not_prepared", "Open a Zotero literature item before resuming a session")
+            title = self._active_context_title
+            pi_chat.resume_session(
+                context.item_key,
+                context.pdf_path,
+                library_id=context.library_id,
+                session_id=request.session_id,
+            )
+            try:
+                session = pi_chat.open_item(
+                    context.item_key,
+                    context.pdf_path,
+                    library_id=context.library_id,
+                )
+            except Exception:
+                self._clear_assistant_context()
+                raise
+            pi_chat.clear_events()
+            self._active_reading_context = context
+            self._active_context_title = title
+            self._active_context_injection_required = True
+            self._active_context_updated = False
+            return AssistantSessionOpenResponse(
+                session=session,
+                context=self._context_metadata(context, title=title),
+                context_injection_required=True,
+                context_updated=False,
+                poll_interval_ms=self.settings.pi.poll_interval_ms,
+            )
+
     def assistant_models(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
         with self._assistant_lock:
@@ -1161,8 +1364,8 @@ class BridgeService:
             if model:
                 markdown_lines.append(f"- 模型：{_markdown_inline(model)}")
             if question:
-                markdown_lines.extend(["", "## 问题", "", _quote_markdown(_escape_raw_html(question.strip()))])
-            markdown_lines.extend(["", "## 回答", "", _escape_raw_html(answer)])
+                markdown_lines.extend(["", "## 问题", "", _quote_markdown(_escape_markdown_text_preserving_math(question.strip()))])
+            markdown_lines.extend(["", "## 回答", "", _escape_markdown_text_preserving_math(answer)])
             result = self.create_note(
                 context.item_key,
                 CreateNoteRequest(markdown="\n".join(markdown_lines).strip() + "\n"),
@@ -1369,6 +1572,18 @@ def create_app(
     @app.get("/assistant/session/messages", dependencies=[Depends(authorize)])
     def assistant_messages() -> dict[str, Any]:
         return service.assistant_messages()
+
+    @app.get("/assistant/session/history", dependencies=[Depends(authorize)])
+    def assistant_session_history() -> dict[str, Any]:
+        return service.assistant_session_history()
+
+    @app.post(
+        "/assistant/session/resume",
+        dependencies=[Depends(authorize)],
+        response_model=AssistantSessionOpenResponse,
+    )
+    def resume_assistant_session(request: AssistantSessionResumeRequest) -> AssistantSessionOpenResponse:
+        return service.resume_assistant_session(request)
 
     @app.get("/assistant/models", dependencies=[Depends(authorize)])
     def assistant_models() -> dict[str, Any]:
