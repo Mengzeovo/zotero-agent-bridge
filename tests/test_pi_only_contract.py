@@ -19,6 +19,7 @@ from zotero_agent_bridge.models import (
     AssistantSaveNoteRequest,
 )
 from zotero_agent_bridge.service import BridgeService, create_app
+from zotero_agent_bridge.zotero_local import ZoteroLocalClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -168,6 +169,14 @@ class PiOnlyContractTest(unittest.TestCase):
         package_root = ROOT / "zotero_agent_bridge"
         self.assertTrue(all(not (package_root / name).exists() for name in retired_implementations))
         self.assertTrue((package_root / "mcp_server.py").exists(), "CLI retirement shell is handled in step 15")
+
+    def test_zotero_local_client_exposes_only_pi_bundle_operations(self) -> None:
+        public_methods = {
+            name
+            for name, value in ZoteroLocalClient.__dict__.items()
+            if callable(value) and not name.startswith("_")
+        }
+        self.assertEqual(public_methods, {"is_available", "build_bundle"})
 
     def test_python_service_public_surface_is_pi_only(self) -> None:
         public_methods = {

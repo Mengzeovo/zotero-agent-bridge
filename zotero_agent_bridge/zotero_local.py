@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 from .errors import BridgeError
-from .utils import file_uri_to_path, normalize_doi, now_iso, strip_html
+from .utils import file_uri_to_path, now_iso, strip_html
 
 
 class ZoteroLocalClient:
@@ -40,10 +40,8 @@ class ZoteroLocalClient:
         except BridgeError:
             return False
 
-    def invalidate_collection_cache(self) -> None:
-        self._collection_cache = None
 
-    def list_collections(self) -> list[dict[str, Any]]:
+    def _list_collections(self) -> list[dict[str, Any]]:
         collections = []
         start = 0
         limit = 100
@@ -68,37 +66,20 @@ class ZoteroLocalClient:
             start += limit
         return collections
 
-    def get_collection(self, collection_key: str) -> dict[str, Any]:
-        collection = self._request(f"collections/{collection_key}")
-        data = collection["data"]
-        parent_key = data.get("parentCollection") or None
-        return {
-            "library_id": collection["library"]["id"],
-            "collection_key": collection["key"],
-            "version": collection["version"],
-            "name": data["name"],
-            "parent_key": parent_key,
-        }
 
-    def get_collections_map(self) -> dict[str, str]:
+    def _get_collections_map(self) -> dict[str, str]:
         if self._collection_cache is not None:
             return self._collection_cache
         self._collection_cache = {
-            collection["collection_key"]: collection["name"] for collection in self.list_collections()
+            collection["collection_key"]: collection["name"] for collection in self._list_collections()
         }
         return self._collection_cache
 
-    def search_items(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        items = self._request(
-            "items",
-            params={"q": query, "qmode": "everything", "limit": limit, "itemType": "-attachment"},
-        )
-        return [item for item in items if item["data"]["itemType"] not in {"attachment", "note"}]
 
-    def get_item(self, item_key: str) -> dict[str, Any]:
+    def _get_item(self, item_key: str) -> dict[str, Any]:
         return self._request(f"items/{item_key}")
 
-    def get_children(self, item_key: str, item_type: str | None = None) -> list[dict[str, Any]]:
+    def _get_children(self, item_key: str, item_type: str | None = None) -> list[dict[str, Any]]:
         children: list[dict[str, Any]] = []
         start = 0
         limit = 100
@@ -113,19 +94,9 @@ class ZoteroLocalClient:
             start += len(batch)
         return children
 
-    def list_top_level_items(self, start: int = 0, limit: int = 100) -> list[dict[str, Any]]:
-        return self._request("items/top", params={"start": start, "limit": limit, "itemType": "-attachment"})
 
-    def find_by_doi(self, doi: str) -> dict[str, Any] | None:
-        normalized = normalize_doi(doi)
-        if not normalized:
-            return None
-        for item in self.search_items(normalized, limit=25):
-            if normalize_doi(item["data"].get("DOI")) == normalized:
-                return item
-        return None
 
-    def resolve_attachment_path(self, attachment: dict[str, Any]) -> str | None:
+    def _resolve_attachment_path(self, attachment: dict[str, Any]) -> str | None:
         data = attachment["data"]
         enclosure = attachment.get("links", {}).get("enclosure", {}).get("href")
         if enclosure:
@@ -166,7 +137,7 @@ class ZoteroLocalClient:
         item_key: str,
     ) -> tuple[list[dict[str, Any]], str | None]:
         try:
-            children = self.get_children(attachment_key, item_type="annotation")
+            children = self._get_children(attachment_key, item_type="annotation")
         except BridgeError as exc:
             return [], f"Could not load annotations for attachment {attachment_key}: {exc.message}"
         annotations = [
@@ -177,9 +148,9 @@ class ZoteroLocalClient:
         return annotations, None
 
     def build_bundle(self, item_key: str) -> dict[str, Any]:
-        item = self.get_item(item_key)
-        children = self.get_children(item_key)
-        collection_map = self.get_collections_map()
+        item = self._get_item(item_key)
+        children = self._get_children(item_key)
+        collection_map = self._get_collections_map()
         attachments = []
         notes = []
         annotations = []
@@ -188,7 +159,7 @@ class ZoteroLocalClient:
             child_data = child["data"]
             if child_data["itemType"] == "attachment":
                 content_type = child_data.get("contentType")
-                pdf_path = self.resolve_attachment_path(child)
+                pdf_path = self._resolve_attachment_path(child)
                 child_annotations: list[dict[str, Any]] = []
                 if content_type == "application/pdf" or str(pdf_path or "").lower().endswith(".pdf"):
                     child_annotations, warning = self._attachment_annotations(child["key"], item_key)
