@@ -34,7 +34,7 @@ class BundlePackagingTest(unittest.TestCase):
         TEST_RUNTIME.mkdir(parents=True, exist_ok=True)
 
     def test_runtime_version_and_source_resource(self) -> None:
-        self.assertEqual(BRIDGE_VERSION, "0.3.5")
+        self.assertEqual(BRIDGE_VERSION, "0.4.0-beta")
         self.assertEqual(LIFECYCLE_PROTOCOL_VERSION, 2)
         self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
         self.assertTrue(resource_path("config", "literature-assistant.md").is_file())

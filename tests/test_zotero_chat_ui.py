@@ -159,6 +159,10 @@ assert.strictEqual(
   test.displayContentText([{{ type: 'text', text: 'look' }}, payload], {{ imageCount: '{{count}} image(s) attached' }}),
   'look\\n1 image(s) attached',
 );
+assert.strictEqual(
+  test.questionSnapshotText([{{ type: 'text', text: 'look' }}, payload]),
+  'look',
+);
 assert.throws(() => test.imagePayloadFromDataURL('data:image/svg+xml;base64,aGVsbG8='), /Unsupported image type/);
 assert.strictEqual(test.shouldSendOnKeydown({{ key: 'Enter', shiftKey: false, isComposing: false }}), true);
 assert.strictEqual(test.shouldSendOnKeydown({{ key: 'Enter', shiftKey: true, isComposing: false }}), false);
@@ -632,7 +636,8 @@ assert.throws(
         legacy_script = ADDON / "chrome" / "content" / "scripts" / "zotero_agent_bridge.js"
         self.assertFalse(legacy_script.exists())
         version = manifest["version"]
-        self.assertEqual(version, "0.3.5")
+        self.assertEqual(manifest["name"], "Zotero Pi Assistant")
+        self.assertEqual(version, "0.4.0-beta")
         zotero_manifest = manifest["applications"]["zotero"]
         self.assertEqual(zotero_manifest["strict_max_version"], "9.0.*")
         self.assertEqual(

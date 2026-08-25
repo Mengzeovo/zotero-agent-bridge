@@ -1,5 +1,5 @@
 /**
- * Zotero Agent Bridge companion add-on bootstrap.
+ * Zotero Pi Assistant add-on bootstrap.
  *
  * Compatible with Zotero 7/8/9 bootstrapped add-ons.
  */
@@ -151,7 +151,7 @@ async function writeBootstrapLog(message, details) {
 }
 
 function buildZoteroAgentBridge(rootURI) {
-  const ADDON_VERSION = "0.3.5";
+  const ADDON_VERSION = "0.4.0-beta";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const DEFAULT_BRIDGE_HOST = "127.0.0.1";
@@ -189,8 +189,7 @@ function buildZoteroAgentBridge(rootURI) {
       statusTimer: null,
       pollTimer: null,
       shuttingDown: false,
-      menuItems: new Map(),
-      chatPanel: null,
+        chatPanel: null,
       bridgeState: "starting",
       bridgeOwnership: "none",
       bridgeOwnerId: null,
@@ -850,152 +849,6 @@ function buildZoteroAgentBridge(rootURI) {
     });
   }
 
-  function noteTitle(note) {
-    if (typeof note.getNoteTitle === "function") {
-      const value = String(note.getNoteTitle() || "").trim();
-      if (value) {
-        return value;
-      }
-    }
-    const raw = String(note.getNote ? note.getNote() : "");
-    const text = raw
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    return text.slice(0, 80) || `Note ${note.key}`;
-  }
-
-  function parentItemForNote(note) {
-    if (!note.parentID) {
-      return null;
-    }
-    return Zotero.Items.get(note.parentID);
-  }
-
-  async function reportObsidianSyncStatus(noteKey, payload) {
-    try {
-      await bridgeRequest("POST", `/obsidian/notes/${encodeURIComponent(noteKey)}/sync-status`, payload);
-    } catch (error) {
-      await appendLog("error", "obsidian_sync_status_report_failed", serializeError(error));
-    }
-  }
-
-  async function syncNoteToObsidian(note, win) {
-    if (!note || !note.isNote || !note.isNote()) {
-      throw new BridgeError("invalid_selection", "Select exactly one Zotero note to sync.");
-    }
-    const parent = parentItemForNote(note);
-    if (!parent) {
-      throw new BridgeError("note_parent_missing", "Selected note has no parent item.");
-    }
-    const betterNotes = Zotero.BetterNotes;
-    if (!betterNotes || !betterNotes.api || !betterNotes.api.sync || !betterNotes.api.convert) {
-      throw new BridgeError("better_notes_unavailable", "Better Notes is not installed or its API is unavailable.");
-    }
-
-    const prepared = await bridgeRequest("POST", "/obsidian/notes/prepare-sync", {
-      item_key: parent.key,
-      note_key: note.key,
-      note_title: noteTitle(note),
-    });
-
-    try {
-      const syncDir = prepared.sync_dir;
-      const filename = prepared.filename;
-      const markdownPath = prepared.markdown_path;
-      await IOUtils.makeDirectory(syncDir, { ignoreExisting: true });
-      const markdown = await betterNotes.api.convert.note2md(note, syncDir, {
-        keepNoteLink: false,
-        withYAMLHeader: true,
-        cachedYAMLHeader: prepared.frontmatter || {},
-      });
-      await Zotero.File.putContentsAsync(markdownPath, markdown);
-      const mdStatus = betterNotes.api.sync.getMDStatusFromContent(markdown);
-      if (typeof betterNotes.api.sync.addSyncNote === "function") {
-        betterNotes.api.sync.addSyncNote(note.id);
-      }
-      betterNotes.api.sync.updateSyncStatus(note.id, {
-        path: syncDir,
-        filename,
-        itemID: note.id,
-        md5: Zotero.Utilities.Internal.md5(mdStatus.content, false),
-        noteMd5: Zotero.Utilities.Internal.md5(note.getNote(), false),
-        lastsync: new Date().getTime(),
-      });
-      await reportObsidianSyncStatus(note.key, {
-        item_key: parent.key,
-        stable_id: prepared.stable_id,
-        status: "synced",
-        markdown_path: markdownPath,
-        vault_relative_path: prepared.vault_relative_path,
-        error: null,
-      });
-      win.alert(`Synced to Obsidian:\n${prepared.vault_relative_path}`);
-      await appendLog("info", "obsidian_sync_completed", {
-        item_key: parent.key,
-        note_key: note.key,
-        markdown_path: markdownPath,
-      });
-    } catch (error) {
-      await reportObsidianSyncStatus(note.key, {
-        item_key: parent.key,
-        stable_id: prepared.stable_id,
-        status: "error",
-        markdown_path: prepared.markdown_path,
-        vault_relative_path: prepared.vault_relative_path,
-        error: error && error.message ? error.message : String(error),
-      });
-      throw error;
-    }
-  }
-
-  async function syncSelectedNoteToObsidian(win) {
-    try {
-      const selected = win.ZoteroPane.getSelectedItems().filter((item) => item.isNote && item.isNote());
-      if (selected.length !== 1) {
-        throw new BridgeError("invalid_selection", "Select exactly one Zotero note to sync.");
-      }
-      await syncNoteToObsidian(selected[0], win);
-    } catch (error) {
-      await appendLog("error", "obsidian_sync_failed", serializeError(error));
-      win.alert(`Zotero Agent Bridge Obsidian sync failed:\n${error && error.message ? error.message : String(error)}`);
-    }
-  }
-
-  function installMenus(win) {
-    const doc = win.document;
-    const itemMenu = doc.getElementById("zotero-itemmenu");
-    if (!itemMenu || state.menuItems.has(win)) {
-      return;
-    }
-    const existing = doc.getElementById("zotero-agent-bridge-sync-obsidian");
-    if (existing) {
-      state.menuItems.set(win, existing);
-      return;
-    }
-    const menuItem = doc.createXULElement ? doc.createXULElement("menuitem") : doc.createElement("menuitem");
-    menuItem.id = "zotero-agent-bridge-sync-obsidian";
-    menuItem.setAttribute("label", "Sync to Obsidian via Bridge");
-    menuItem.addEventListener("command", () => {
-      void syncSelectedNoteToObsidian(win);
-    });
-    itemMenu.appendChild(menuItem);
-    state.menuItems.set(win, menuItem);
-  }
-
-  function uninstallMenus(win = null) {
-    const entries = win
-      ? [[win, state.menuItems.get(win)]]
-      : [...state.menuItems.entries()];
-    for (const [owner, item] of entries) {
-      try {
-        item?.remove();
-      } catch (error) {}
-      state.menuItems.delete(owner);
-    }
-  }
-
   async function writeStatus(extra = {}) {
     const payload = Object.assign(
       {
@@ -1295,17 +1148,14 @@ function buildZoteroAgentBridge(rootURI) {
         await initialize();
       },
       onMainWindowLoad(window) {
-        installMenus(window);
-        state.chatPanel?.installWindow(window);
+          state.chatPanel?.installWindow(window);
       },
       onMainWindowUnload(window) {
         state.chatPanel?.cleanupWindow(window);
-        uninstallMenus(window);
-      },
+        },
       async onShutdown() {
         state.chatPanel?.shutdown();
-        uninstallMenus();
-        await shutdownAddon();
+          await shutdownAddon();
       },
     },
   };

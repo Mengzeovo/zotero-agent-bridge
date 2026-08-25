@@ -1,55 +1,38 @@
-﻿# Zotero Agent Bridge Companion Add-on
+# Zotero Pi Assistant Add-on
 
-This add-on runs inside Zotero and executes write commands for the external `zotero-agent-bridge` service.
+This bootstrapped Zotero add-on provides the Pi literature assistant panel and manages its bundled private Bridge.
 
-## What it does
+## Responsibilities
 
-- Polls a shared runtime directory for queued command JSON files
-- Executes write operations through Zotero's JavaScript API
-- Writes responses back for the bridge service to consume
-- Maintains a heartbeat/status file and a local add-on log
+- Register the Item Pane and reader-side Pi chat panels.
+- Verify, install, start, health-check, roll back, and stop the bundled Bridge.
+- Maintain the managed loopback configuration and API token.
+- Render Markdown and KaTeX while preserving original LaTeX for copy operations.
+- Execute the single allowed Zotero write command: `create_assistant_note`.
 
-## Runtime directory
-
-The add-on resolves its bridge home in this order:
-
-1. `config/default-config.json` `bridgeHome` if non-empty
-2. `<Zotero.DataDirectory.dir>/zotero-agent-bridge`
-
-Under that directory it expects:
-
-- `commands/`
-- `responses/`
-- `archive/`
-- `logs/`
-- `status/`
-
-## Install
-
-1. Zip the contents of this folder into an `.xpi` archive.
-2. In Zotero, open `Tools -> Plugins`.
-3. Install the `.xpi` from file.
-4. Restart Zotero if prompted.
-
-## Command format
-
-Each file in `commands/` should be a UTF-8 JSON document with at least:
+## Private queue command
 
 ```json
 {
-  "request_id": "req-123",
-  "command": "create_item",
-  "payload": {}
+  "request_id": "<uuid>",
+  "command": "create_assistant_note",
+  "payload": {
+    "item_key": "ABCD1234",
+    "attachment_key": "PDFD1234",
+    "document_id": "<sha256>",
+    "context_fingerprint": "<sha256>",
+    "markdown": "# Pi 阅读助手记录",
+    "note_html": "<h1>Pi 阅读助手记录</h1>"
+  }
 }
 ```
 
-Supported commands:
+All former generic queue commands are rejected as `unsupported_command` and cannot mutate Zotero.
 
-- `create_item`
-- `update_item`
-- `attach_linked_pdf`
-- `create_note`
+## Stable identity
 
-`create_note` accepts both the normalized Markdown source in `payload.markdown` and pre-rendered fallback HTML in `payload.note_html`. When Better Notes is installed, the add-on uses `Zotero.BetterNotes.api.convert.md2html()` so math, tables, and other supported rich-text nodes use Zotero's native note schema. If conversion is unavailable or fails, `note_html` is saved instead.
+- Add-on ID: `zotero-agent-bridge@local`
+- Bridge home: `<Zotero data directory>/zotero-agent-bridge`
+- Managed binary root: `%LOCALAPPDATA%\ZoteroAgentBridge\bridge`
 
-Responses are written to `responses/<request_id>.json`.
+These identifiers remain unchanged for upgrade compatibility.

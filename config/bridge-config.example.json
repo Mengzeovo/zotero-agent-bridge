@@ -1,11 +1,17 @@
-﻿{
+{
+  "managed_config_schema_version": 2,
+  "product_scope": "zotero-pi-only",
   "host": "127.0.0.1",
   "port": 8765,
+  "zotero_data_dir": "C:/Users/<YOUR_USER>/Zotero",
   "zotero_local_api_base": "http://127.0.0.1:23119/api/users/0",
   "bridge_home": "C:/Users/<YOUR_USER>/Zotero/zotero-agent-bridge",
-  "metadata_dir": "./mirror/metadata",
-  "notes_dir": "./mirror/notes",
   "base_attachment_path": "E:/papers",
+  "addon_timeout_seconds": 30.0,
+  "addon_status_ttl_seconds": 15.0,
+  "lifecycle_addon_exit_grace_seconds": 30.0,
+  "lifecycle_watchdog_interval_seconds": 1.0,
+  "user_agent": "ZoteroPiAssistant/0.4.0-beta",
   "pi": {
     "executable": "C:/Users/<YOUR_USER>/AppData/Roaming/npm/pi.cmd",
     "session_dir": "C:/Users/<YOUR_USER>/Zotero/zotero-agent-bridge/pi-sessions",
@@ -16,17 +22,5 @@
     "idle_timeout_seconds": 1800,
     "max_context_chars": 500000,
     "poll_interval_ms": 300
-  },
-  "obsidian": {
-    "vault_name": "ResearchVault",
-    "vault_path": "E:/Obsidian/ResearchVault",
-    "default_note_dir": "Zotero Notes",
-    "index_path": "./mirror/metadata/obsidian-index.json",
-    "bridge_open_base_url": "http://127.0.0.1:8765"
-  },
-  "addon_timeout_seconds": 30.0,
-  "addon_status_ttl_seconds": 15.0,
-  "lifecycle_addon_exit_grace_seconds": 30.0,
-  "lifecycle_watchdog_interval_seconds": 1.0,
-  "user_agent": "ZoteroAgentBridge/0.1"
+  }
 }

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "zotero-agent-bridge"
-version = "0.3.5"
-description = "Local HTTP and MCP bridge for Zotero-backed agent workflows"
+name = "zotero-pi-assistant"
+version = "0.4.0b0"
+description = "Private Bridge runtime for the Zotero Pi Assistant add-on"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.111.0",
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-zotero-agent-bridge = "zotero_agent_bridge.__main__:main"
+zotero-pi-assistant-bridge = "zotero_agent_bridge.__main__:main"
 zotero-agent-bridge-mcp = "zotero_agent_bridge.mcp_server:main"
 
 [tool.setuptools]
