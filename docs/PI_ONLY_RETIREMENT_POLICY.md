@@ -1,6 +1,6 @@
 # Zotero Pi Assistant Two-Stage Retirement Policy
 
-Status: adopted before implementation
+Status: completed through final removal in `0.4.1-beta`
 
 Policy source: [`config/pi-only-transition.json`](../config/pi-only-transition.json)
 
@@ -60,7 +60,7 @@ Obsolete user data may be documented for manual archival/removal but is never de
 
 ## Release 2: `0.4.1-beta` final removal
 
-After `0.4.0-beta` passes automated and real-Zotero upgrade acceptance:
+`0.4.0-beta` passed automated and real-Zotero upgrade acceptance. `0.4.1-beta` therefore completes the second-stage removal:
 
 - 410 transition routes are unregistered and return 404;
 - MCP, Obsidian, mirror, DOI import, classification, and collection-tree implementations are physically deleted;
@@ -83,7 +83,7 @@ The first `0.4.0-beta` launch uses the following gate:
 6. Before that success marker, permit a single emergency fallback to the bundled `0.3.5` baseline if v2 startup fails.
 7. After the success marker, do not select or start a pre-v2 broad Bridge as shared or last-known-good runtime.
 
-The emergency fallback protects availability during first upgrade; it is not renewed support for the retired API surface.
+The emergency fallback protected the first `0.4.0-beta` upgrade only. Its implementation is physically absent from `0.4.1-beta`; install-state normalization now establishes protocol floor 2 before rollback selection, so protocol-v1 candidates are rejected.
 
 ## Implementation rules
 

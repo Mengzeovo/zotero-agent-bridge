@@ -1,4 +1,4 @@
-# Zotero Pi Assistant 0.4.0-beta
+# Zotero Pi Assistant 0.4.1-beta
 
 Zotero Pi Assistant embeds a Pi-powered literature chat panel in the Zotero Item Pane. The XPI bundles a private Windows x64 Bridge; the add-on owns Bridge lifecycle, while the Bridge owns Pi RPC lifecycle.
 
@@ -36,20 +36,9 @@ Every route requires the managed Bridge token.
 
 The HTTP server is an internal add-on transport, not a public Agent API.
 
-## Retired compatibility surface
+## Removed surfaces
 
-During `0.4.0-beta`, former CRUD, sync, Obsidian, MCP, and session-close routes remain authenticated but return:
-
-```json
-{
-  "error": {
-    "code": "feature_retired",
-    "message": "This integration surface is no longer supported by Zotero Pi Assistant."
-  }
-}
-```
-
-They perform no Zotero or filesystem side effects. The compatibility shells are scheduled for physical removal in `0.4.1-beta` after release validation.
+As of `0.4.1-beta`, former CRUD, sync, Obsidian, MCP, session-close, classification, and external-launcher surfaces are physically absent. Former HTTP paths are not registered and return ordinary `404 Not Found` responses. No removed console entry point or compatibility script is packaged.
 
 ## Note-save boundary
 
@@ -81,7 +70,7 @@ Pi is launched with tools, skills, prompt templates, extensions, context files, 
 ## Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.0-beta -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.1-beta -BuildBridge
 ```
 
 Normal users install the XPI and do not need Python, pip, source checkout, legacy launchers, MCP registration, or Obsidian integration.

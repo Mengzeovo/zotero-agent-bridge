@@ -1,10 +1,10 @@
 # Zotero Pi Assistant
 
-**当前版本：0.4.0-beta**
+**当前版本：0.4.1-beta**
 
 Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它读取当前论文的本地 PDF、Zotero 子笔记与批注，提供可恢复的连续对话，并在用户确认后把最终回答保存为 Zotero Note。
 
-本项目不再提供通用 Agent Bridge、公共 CRUD API、MCP 工具、Obsidian 同步或论文归类能力。`0.4.0-beta` 对旧 HTTP/CLI 表面保留无副作用的退场响应；稳定验证后将在 `0.4.1-beta` 物理删除兼容壳。
+本项目只提供 Zotero 内置 Pi 文献助手。通用 Agent Bridge、公共 CRUD API、MCP 工具、Obsidian 同步、论文归类及其过渡兼容壳均已从 `0.4.1-beta` 物理删除；旧 HTTP 路径现在是普通的 `404 Not Found`。
 
 ## 功能
 
@@ -19,7 +19,7 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 
 ## 安装
 
-1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.0-beta.xpi`。
+1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.1-beta.xpi`。
 2. 在 Zotero 打开 **工具 → 插件 → Install Plugin From File…**。
 3. 选择 XPI 并重启 Zotero。
 4. 选中带本地 PDF 的论文，在 Item Pane 打开 **Pi 文献助手**。
@@ -27,7 +27,7 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 插件会校验并安装自带 Bridge 到：
 
 ```text
-%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.0-beta
+%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.1-beta
 ```
 
 受管数据继续使用稳定路径：
@@ -58,7 +58,7 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 - Pi 使用 `--no-tools --no-skills --no-extensions --no-approve` 等限制参数启动。
 - PDF、笔记和批注被视为不可信来源材料。
 - 唯一 Zotero 写命令是专用 `create_assistant_note`，且由用户确认触发。
-- 旧 CRUD、MCP、Obsidian 和通用脚本在 `0.4.0-beta` 只返回 `feature_retired`，不执行副作用。
+- 旧 CRUD、MCP、Obsidian 和通用脚本已不存在；仅保留插件面板所需的私有 Pi 路由。
 
 ## 构建与测试
 
@@ -67,13 +67,13 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 ```powershell
 py -3.12 -m pip install -e .
 py -3.12 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.0-beta -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.1-beta -BuildBridge
 ```
 
 主要输出：
 
 ```text
-dist\zotero-agent-bridge-addon-0.4.0-beta.xpi
+dist\zotero-agent-bridge-addon-0.4.1-beta.xpi
 dist\zotero-agent-bridge-addon.xpi
 ```
 

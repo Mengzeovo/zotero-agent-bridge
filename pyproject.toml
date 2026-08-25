@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zotero-pi-assistant"
-version = "0.4.0b0"
+version = "0.4.1b0"
 description = "Private Bridge runtime for the Zotero Pi Assistant add-on"
 requires-python = ">=3.12"
 dependencies = [
@@ -18,7 +18,6 @@ dependencies = [
 
 [project.scripts]
 zotero-pi-assistant-bridge = "zotero_agent_bridge.__main__:main"
-zotero-agent-bridge-mcp = "zotero_agent_bridge.mcp_server:main"
 
 [tool.setuptools]
 include-package-data = true
