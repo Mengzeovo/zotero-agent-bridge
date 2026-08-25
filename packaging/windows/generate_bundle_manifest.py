@@ -11,7 +11,8 @@ from pathlib import Path, PurePosixPath
 
 
 BUNDLE_SCHEMA_VERSION = 1
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+PRODUCT_SCOPE = "zotero-pi-only"
 DISTRIBUTION = "xpi-bundled"
 PLATFORM = "windows"
 ARCHITECTURE = "x64"
@@ -75,6 +76,7 @@ def build_manifest(bundle_dir: Path, bridge_version: str, project_root: Path) ->
         "bundle_schema_version": BUNDLE_SCHEMA_VERSION,
         "bridge_version": bridge_version,
         "protocol_version": PROTOCOL_VERSION,
+        "product_scope": PRODUCT_SCOPE,
         "distribution": DISTRIBUTION,
         "platform": PLATFORM,
         "architecture": ARCHITECTURE,

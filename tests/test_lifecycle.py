@@ -54,7 +54,8 @@ class BridgeLifecycleControllerTest(unittest.TestCase):
         status = lifecycle.status()
         self.assertEqual(status["owner_id"], "owner-id")
         self.assertEqual(status["bridge_version"], "0.3.5")
-        self.assertEqual(status["protocol_version"], 1)
+        self.assertEqual(status["protocol_version"], 2)
+        self.assertEqual(status["product_scope"], "zotero-pi-only")
         self.assertEqual(status["distribution"], "source")
 
     def test_unmanaged_bridge_cannot_be_stopped_by_addon(self) -> None:

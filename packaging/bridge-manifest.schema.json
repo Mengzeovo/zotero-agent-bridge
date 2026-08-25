@@ -8,6 +8,7 @@
     "bundle_schema_version",
     "bridge_version",
     "protocol_version",
+    "product_scope",
     "distribution",
     "platform",
     "architecture",
@@ -22,7 +23,8 @@
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
     },
-    "protocol_version": { "type": "integer", "const": 1 },
+    "protocol_version": { "type": "integer", "const": 2 },
+    "product_scope": { "const": "zotero-pi-only" },
     "distribution": { "const": "xpi-bundled" },
     "platform": { "const": "windows" },
     "architecture": { "const": "x64" },

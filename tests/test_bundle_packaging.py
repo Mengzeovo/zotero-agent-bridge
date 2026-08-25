@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 
 from zotero_agent_bridge.runtime_paths import resource_path
-from zotero_agent_bridge.version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSION
+from zotero_agent_bridge.version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSION, PRODUCT_SCOPE
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,8 +35,25 @@ class BundlePackagingTest(unittest.TestCase):
 
     def test_runtime_version_and_source_resource(self) -> None:
         self.assertEqual(BRIDGE_VERSION, "0.3.5")
-        self.assertEqual(LIFECYCLE_PROTOCOL_VERSION, 1)
+        self.assertEqual(LIFECYCLE_PROTOCOL_VERSION, 2)
+        self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
         self.assertTrue(resource_path("config", "literature-assistant.md").is_file())
+
+    def test_manifest_generator_emits_pi_only_protocol_v2(self) -> None:
+        generator = load_script("zab_generate_manifest_test", "packaging/windows/generate_bundle_manifest.py")
+        with tempfile.TemporaryDirectory(prefix="bundle-protocol-", dir=TEST_RUNTIME) as directory:
+            root = Path(directory)
+            bundle = root / "zab-bridge"
+            bundle.mkdir()
+            (bundle / "zab-bridge.exe").write_bytes(b"bridge")
+            manifest = generator.build_manifest(bundle, BRIDGE_VERSION, ROOT)
+        self.assertEqual(manifest["protocol_version"], LIFECYCLE_PROTOCOL_VERSION)
+        self.assertEqual(manifest["product_scope"], PRODUCT_SCOPE)
+        self.assertEqual(manifest["distribution"], "xpi-bundled")
+        schema = json.loads((ROOT / "packaging" / "bridge-manifest.schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["protocol_version"]["const"], LIFECYCLE_PROTOCOL_VERSION)
+        self.assertEqual(schema["properties"]["product_scope"]["const"], PRODUCT_SCOPE)
+        self.assertIn("product_scope", schema["required"])
 
     def test_bundle_manifest_covers_exact_file_set_and_hashes(self) -> None:
         manifest = json.loads((BUNDLE_ROOT / "bridge-manifest.json").read_text(encoding="utf-8"))
@@ -80,7 +97,8 @@ class BundlePackagingTest(unittest.TestCase):
             manifest = {
                 "bundle_schema_version": 1,
                 "bridge_version": "0.3.5",
-                "protocol_version": 1,
+                "protocol_version": 2,
+                "product_scope": "zotero-pi-only",
                 "distribution": "xpi-bundled",
                 "platform": "windows",
                 "architecture": "x64",
@@ -105,8 +123,8 @@ const path = require('path');
 const bundle = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
 const config = require('./zotero_companion_addon/chrome/content/scripts/bridge_config_manager.js').__test;
 const manifest = {
-  bundle_schema_version: 1, bridge_version: '0.3.5', protocol_version: 1,
-  distribution: 'xpi-bundled', platform: 'windows', architecture: 'x64',
+  bundle_schema_version: 1, bridge_version: '0.3.5', protocol_version: 2,
+  product_scope: 'zotero-pi-only', distribution: 'xpi-bundled', platform: 'windows', architecture: 'x64',
   entrypoint: 'zab-bridge/zab-bridge.exe', sentinel: '.zab-bundle-installed.json',
   files: [{path:'zab-bridge/zab-bridge.exe',size:1,sha256:'a'.repeat(64)}]
 };

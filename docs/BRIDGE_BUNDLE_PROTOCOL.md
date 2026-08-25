@@ -1,11 +1,12 @@
-# XPI Bridge Bundle Protocol v1
+# XPI Bridge Bundle Schema v1 / Lifecycle Protocol v2
 
-本协议定义 Zotero Agent Bridge 0.3.x 如何在 XPI 中携带、校验、安装和启动 Windows x64 自包含 Bridge。
+本协议定义 Zotero Pi Assistant 如何在 XPI 中携带、校验、安装和启动 Windows x64 自包含 Bridge，并说明从 lifecycle protocol v1 升级到 Pi-only protocol v2 的兼容边界。
 
 ## 固定版本
 
 - Bundle schema：`1`
-- Lifecycle protocol：`1`
+- Lifecycle protocol：`2`
+- Product scope：`zotero-pi-only`
 - Distribution：`xpi-bundled`
 - Platform：`windows`
 - Architecture：`x64`
@@ -31,8 +32,9 @@ bridge/windows-x64/
 ```json
 {
   "bundle_schema_version": 1,
-  "bridge_version": "0.3.0",
-  "protocol_version": 1,
+  "bridge_version": "0.4.0-beta",
+  "protocol_version": 2,
+  "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
   "platform": "windows",
   "architecture": "x64",
@@ -104,8 +106,9 @@ bridge/windows-x64/
 ```json
 {
   "sentinel_schema_version": 1,
-  "bridge_version": "0.3.0",
-  "protocol_version": 1,
+  "bridge_version": "0.4.0-beta",
+  "protocol_version": 2,
+  "product_scope": "zotero-pi-only",
   "manifest_sha256": "<sha256 of canonical manifest bytes>",
   "installed_at": "<UTC ISO-8601>",
   "entrypoint": "zab-bridge/zab-bridge.exe"
@@ -142,19 +145,21 @@ Bridge `/lifecycle` 必须返回：
   "pid": 1234,
   "started_at": "...",
   "exit_with_addon": true,
-  "bridge_version": "0.3.0",
-  "protocol_version": 1,
+  "bridge_version": "0.4.0-beta",
+  "protocol_version": 2,
+  "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled"
 }
 ```
 
-插件只能将满足以下条件的实例视为兼容 shared/owned Bridge：
+当前 Pi-only Bridge 必须满足：
 
-- `protocol_version == 1`
+- `protocol_version == 2`
+- `product_scope == "zotero-pi-only"`
 - `bridge_version` 是非空合法版本
-- `distribution` 为已知值：`xpi-bundled` 或受支持的 legacy distribution
+- bundled 启动时 `distribution == "xpi-bundled"`，且版本/协议与已校验 manifest 一致
 
-未知协议不得被静默复用。
+升级过渡期允许识别 protocol v1 或缺少 lifecycle protocol 的旧实例，但只能将其标记为 `legacy/transitional`，不能视为已建立 Pi-only 协议基线。未知协议不得被静默复用。
 
 ## 运行时定位文件
 
@@ -163,8 +168,9 @@ Bridge Home 中写入 `bridge-runtime.json`：
 ```json
 {
   "runtime_schema_version": 1,
-  "bridge_version": "0.3.0",
-  "protocol_version": 1,
+  "bridge_version": "0.4.0-beta",
+  "protocol_version": 2,
+  "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
   "executable": "<absolute verified path>",
   "config_path": "<absolute managed config path>",
@@ -173,7 +179,7 @@ Bridge Home 中写入 `bridge-runtime.json`：
 }
 ```
 
-外部客户端可以读取该文件定位内置 Bridge，但不能据此获得 owner token。
+该文件只用于 Zotero add-on 的内部运行时定位和升级诊断；它不是对外客户端发现机制，也不包含 owner token。
 
 ## 回滚规则
 

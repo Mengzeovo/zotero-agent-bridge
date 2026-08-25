@@ -2,7 +2,8 @@
 
 var ZoteroAgentBridgeBundleManager = (() => {
   const BUNDLE_SCHEMA_VERSION = 1;
-  const PROTOCOL_VERSION = 1;
+  const PROTOCOL_VERSION = 2;
+  const PRODUCT_SCOPE = "zotero-pi-only";
   const BUNDLE_PREFIX = "bridge/windows-x64/";
   const INSTALL_STATE = "install-state.json";
   const INSTALL_LOCK = "install.lock";
@@ -39,6 +40,9 @@ var ZoteroAgentBridgeBundleManager = (() => {
     }
     if (manifest.protocol_version !== PROTOCOL_VERSION) {
       throw new BundleError("bundle_protocol_unsupported", "Unsupported Bridge lifecycle protocol");
+    }
+    if (manifest.product_scope !== PRODUCT_SCOPE) {
+      throw new BundleError("bundle_product_scope_unsupported", "Bridge Bundle is not scoped to Zotero Pi Assistant");
     }
     if (manifest.distribution !== "xpi-bundled" || manifest.platform !== "windows" || manifest.architecture !== "x64") {
       throw new BundleError("bundle_platform_unsupported", "Bridge Bundle is not Windows x64");
@@ -247,6 +251,7 @@ var ZoteroAgentBridgeBundleManager = (() => {
         sentinel.sentinel_schema_version !== 1
         || sentinel.bridge_version !== manifest.bridge_version
         || sentinel.protocol_version !== manifest.protocol_version
+        || sentinel.product_scope !== manifest.product_scope
         || sentinel.manifest_sha256 !== manifestSha256
         || sentinel.entrypoint !== manifest.entrypoint
       ) {
@@ -416,6 +421,7 @@ var ZoteroAgentBridgeBundleManager = (() => {
             sentinel_schema_version: 1,
             bridge_version: manifest.bridge_version,
             protocol_version: manifest.protocol_version,
+            product_scope: manifest.product_scope,
             manifest_sha256: manifestSha256,
             installed_at: new Date().toISOString(),
             entrypoint: manifest.entrypoint,

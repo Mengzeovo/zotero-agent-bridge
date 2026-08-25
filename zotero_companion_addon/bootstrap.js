@@ -22,6 +22,111 @@ async function convertMarkdownNoteHTML(payload, betterNotes) {
   }
 }
 
+const PI_ONLY_LIFECYCLE_PROTOCOL_VERSION = 2;
+const TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION = 1;
+const PI_ONLY_PRODUCT_SCOPE = "zotero-pi-only";
+const SUPPORTED_BRIDGE_DISTRIBUTIONS = Object.freeze(["xpi-bundled", "source"]);
+
+class BridgeProtocolError extends Error {
+  constructor(code, message, details = null) {
+    super(message);
+    this.name = "BridgeError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function classifyBridgeLifecycle(lifecycle, {
+  bundled = false,
+  expectedBundleVersion = null,
+  expectedBundleProtocolVersion = null,
+  expectedProductScope = PI_ONLY_PRODUCT_SCOPE,
+} = {}) {
+  if (!lifecycle || typeof lifecycle !== "object") {
+    throw new BridgeProtocolError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
+  }
+  if (lifecycle.protocol_version === undefined || lifecycle.protocol_version === null) {
+    if (bundled) {
+      throw new BridgeProtocolError(
+        "bridge_protocol_incompatible",
+        "Bundled Bridge did not report a lifecycle protocol version",
+      );
+    }
+    return {
+      compatible: true,
+      legacy: true,
+      transitional: true,
+      piOnly: false,
+      protocolVersion: 0,
+      distribution: "legacy-python",
+      bridgeVersion: String(lifecycle.bridge_version || ""),
+      productScope: "legacy-unknown",
+    };
+  }
+  if (!Number.isInteger(Number(lifecycle.pid))) {
+    throw new BridgeProtocolError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
+  }
+  const protocolVersion = Number(lifecycle.protocol_version);
+  const distribution = String(lifecycle.distribution || "");
+  const bridgeVersion = String(lifecycle.bridge_version || "");
+  const productScope = String(lifecycle.product_scope || "");
+  const supportedProtocol = (
+    protocolVersion === PI_ONLY_LIFECYCLE_PROTOCOL_VERSION
+    || protocolVersion === TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION
+  );
+  if (!supportedProtocol || !bridgeVersion || !SUPPORTED_BRIDGE_DISTRIBUTIONS.includes(distribution)) {
+    throw new BridgeProtocolError(
+      "bridge_protocol_incompatible",
+      "Bridge lifecycle protocol or distribution is unsupported",
+      {
+        protocol_version: lifecycle.protocol_version,
+        bridge_version: lifecycle.bridge_version,
+        product_scope: lifecycle.product_scope,
+        distribution: lifecycle.distribution,
+      },
+    );
+  }
+  if (protocolVersion === PI_ONLY_LIFECYCLE_PROTOCOL_VERSION && productScope !== expectedProductScope) {
+    throw new BridgeProtocolError(
+      "bridge_protocol_incompatible",
+      "Bridge lifecycle product scope is unsupported",
+      {
+        expected_product_scope: expectedProductScope,
+        product_scope: lifecycle.product_scope,
+        protocol_version: lifecycle.protocol_version,
+      },
+    );
+  }
+  if (bundled && (
+    distribution !== "xpi-bundled"
+    || (expectedBundleVersion && bridgeVersion !== expectedBundleVersion)
+    || (expectedBundleProtocolVersion !== null && protocolVersion !== Number(expectedBundleProtocolVersion))
+  )) {
+    throw new BridgeProtocolError(
+      "bridge_bundle_runtime_mismatch",
+      "Running Bridge does not match the installed Bundle",
+      {
+        expected_version: expectedBundleVersion,
+        actual_version: bridgeVersion,
+        expected_protocol_version: expectedBundleProtocolVersion,
+        actual_protocol_version: protocolVersion,
+        distribution,
+      },
+    );
+  }
+  const piOnly = protocolVersion === PI_ONLY_LIFECYCLE_PROTOCOL_VERSION;
+  return {
+    compatible: true,
+    legacy: !piOnly,
+    transitional: !piOnly,
+    piOnly,
+    protocolVersion,
+    distribution,
+    bridgeVersion,
+    productScope: piOnly ? productScope : (productScope || "legacy-agent-bridge"),
+  };
+}
+
 function install(data, reason) {}
 
 async function writeBootstrapLog(message, details) {
@@ -267,39 +372,12 @@ function buildZoteroAgentBridge(rootURI) {
   }
 
   function classifyLifecycle(lifecycle, { bundled = false } = {}) {
-    if (!lifecycle || typeof lifecycle !== "object") {
-      throw new BridgeError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
-    }
-    if (lifecycle.protocol_version === undefined || lifecycle.protocol_version === null) {
-      if (bundled) {
-        throw new BridgeError("bridge_protocol_incompatible", "Bundled Bridge did not report a lifecycle protocol version");
-      }
-      return { compatible: true, legacy: true, protocolVersion: 0, distribution: "legacy-python" };
-    }
-    if (!Number.isInteger(Number(lifecycle.pid))) {
-      throw new BridgeError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
-    }
-    const protocolVersion = Number(lifecycle.protocol_version);
-    const distribution = String(lifecycle.distribution || "");
-    const bridgeVersion = String(lifecycle.bridge_version || "");
-    if (protocolVersion !== 1 || !bridgeVersion || !["xpi-bundled", "source"].includes(distribution)) {
-      throw new BridgeError("bridge_protocol_incompatible", "Bridge lifecycle protocol or distribution is unsupported", {
-        protocol_version: lifecycle.protocol_version,
-        bridge_version: lifecycle.bridge_version,
-        distribution: lifecycle.distribution,
-      });
-    }
-    if (bundled && (
-      distribution !== "xpi-bundled"
-      || bridgeVersion !== state.bridgeBundleInfo?.manifest?.bridge_version
-    )) {
-      throw new BridgeError("bridge_bundle_runtime_mismatch", "Running Bridge does not match the installed Bundle", {
-        expected_version: state.bridgeBundleInfo?.manifest?.bridge_version,
-        actual_version: bridgeVersion,
-        distribution,
-      });
-    }
-    return { compatible: true, legacy: false, protocolVersion, distribution, bridgeVersion };
+    return classifyBridgeLifecycle(lifecycle, {
+      bundled,
+      expectedBundleVersion: state.bridgeBundleInfo?.manifest?.bridge_version || null,
+      expectedBundleProtocolVersion: state.bridgeBundleInfo?.manifest?.protocol_version ?? null,
+      expectedProductScope: state.bridgeBundleInfo?.manifest?.product_scope || PI_ONLY_PRODUCT_SCOPE,
+    });
   }
 
   async function writeRuntimeLocator(lifecycle) {
@@ -312,6 +390,7 @@ function buildZoteroAgentBridge(rootURI) {
       runtime_schema_version: 1,
       bridge_version: lifecycle.bridge_version,
       protocol_version: lifecycle.protocol_version,
+      product_scope: lifecycle.product_scope || null,
       distribution: lifecycle.distribution,
       executable: state.bridgeBundleInfo.executable,
       config_path: state.bridgeManagedConfig.configPath,
@@ -462,6 +541,7 @@ function buildZoteroAgentBridge(rootURI) {
           owner_id: state.bridgeOwnerId,
           bridge_version: lifecycle.bridge_version,
           protocol_version: lifecycle.protocol_version,
+          product_scope: lifecycle.product_scope || null,
           distribution: lifecycle.distribution,
           rollback_from: rollbackFrom,
         });
@@ -1473,6 +1553,10 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     __test: {
       convertMarkdownNoteHTML,
+      classifyBridgeLifecycle,
+      PI_ONLY_LIFECYCLE_PROTOCOL_VERSION,
+      TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION,
+      PI_ONLY_PRODUCT_SCOPE,
     },
   };
 }
