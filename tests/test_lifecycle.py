@@ -26,8 +26,6 @@ class BridgeLifecycleControllerTest(unittest.TestCase):
             api_token="api-token",
             zotero_local_api_base="http://127.0.0.1:23119/api/users/0",
             bridge_home=self.root / "bridge",
-            metadata_dir=self.root / "metadata",
-            notes_dir=self.root / "notes",
             addon_timeout_seconds=1.0,
             addon_status_ttl_seconds=1.0,
             user_agent="LifecycleTest/0.1",

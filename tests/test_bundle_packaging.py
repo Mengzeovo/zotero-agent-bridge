@@ -207,17 +207,89 @@ assert.strictEqual(bundle.pathInside('C:/safe', 'C:/unsafe/x.exe', P), false);
 assert.strictEqual(config.loopbackHost('0.0.0.0'), '127.0.0.1');
 assert.strictEqual(config.legacyWorkdir({workdir:'D:/repo'}, P), path.win32.normalize('D:/repo'));
 assert.strictEqual(config.legacyWorkdir({workdir:'relative'}, P), null);
-const migrated = config.migrateConfig({metadata_dir:'./mirror/meta',pi:{session_dir:'./sessions'}}, {
+const migrated = config.migrateConfig({
+  metadata_dir:'./mirror/meta', notes_dir:'./mirror/notes',
+  obsidian:{vault_path:'./vault'}, api_token:'preserved-token',
+  pi:{session_dir:'./sessions'}
+}, {
   bridgeHome:'D:/bridge',zoteroDataDir:'D:/zotero',legacyBaseDir:'D:/old',PathUtils:P
 });
+assert.strictEqual(migrated.managed_config_schema_version, 2);
+assert.strictEqual(migrated.product_scope, 'zotero-pi-only');
 assert.strictEqual(migrated.bridge_home, 'D:/bridge');
-assert.strictEqual(migrated.metadata_dir, path.win32.normalize('D:/old/mirror/meta'));
+assert.strictEqual(migrated.api_token, 'preserved-token');
+assert.strictEqual(migrated.pi.session_dir, path.win32.normalize('D:/old/sessions'));
+assert.strictEqual(Object.hasOwn(migrated, 'metadata_dir'), false);
+assert.strictEqual(Object.hasOwn(migrated, 'notes_dir'), false);
+assert.strictEqual(Object.hasOwn(migrated, 'obsidian'), false);
 assert.strictEqual(config.resolveOptionalPath('../shared/data', 'D:/old/config', P), path.win32.normalize('D:/old/shared/data'));
 assert.strictEqual(config.resolveOptionalPath('E:/papers', 'D:/old/config', P), path.win32.normalize('E:/papers'));
 assert.strictEqual(config.resolveOptionalPath('C:/Users/test/sessions', 'D:/old/config', P), path.win32.normalize('C:/Users/test/sessions'));
 """
         result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_managed_v1_config_is_projected_to_pi_only_v2_without_losing_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="config-migrate-", dir=TEST_RUNTIME) as directory:
+            root = Path(directory)
+            legacy = {
+                "managed_config_schema_version": 1,
+                "host": "127.0.0.1",
+                "port": 8765,
+                "api_token": "stable-token",
+                "bridge_home": str(root),
+                "metadata_dir": str(root / "mirror" / "metadata"),
+                "notes_dir": str(root / "mirror" / "notes"),
+                "obsidian": {"vault_path": str(root / "vault")},
+                "pi": {"session_dir": str(root / "pi-sessions")},
+            }
+            (root / "bridge-config.managed.json").write_text(json.dumps(legacy), encoding="utf-8")
+            script = r"""
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const managerModule = require('./zotero_companion_addon/chrome/content/scripts/bridge_config_manager.js');
+const bridgeHome = process.argv[1];
+const IOUtils = {
+  exists: async (p) => fs.existsSync(p),
+  readUTF8: async (p) => fs.promises.readFile(p, 'utf8'),
+  writeUTF8: async (p, value) => { await fs.promises.mkdir(path.dirname(p), {recursive:true}); await fs.promises.writeFile(p, value, 'utf8'); },
+  move: async (src, dst) => { await fs.promises.rm(dst, {force:true}); await fs.promises.rename(src, dst); },
+  makeDirectory: async (p) => fs.promises.mkdir(p, {recursive:true}),
+};
+let uuid = 0;
+const manager = managerModule.create({
+  bridgeHome,
+  zoteroDataDir: path.join(bridgeHome, 'zotero'),
+  addonConfig: {},
+  IOUtils,
+  PathUtils: {join:path.join, parent:path.dirname, normalize:path.normalize, isAbsolute:path.isAbsolute},
+  Services: {uuid:{generateUUID:()=>`migration-${++uuid}`}},
+  appendLog: async()=>{},
+});
+(async()=>{
+  const result = await manager.ensureManagedConfig();
+  assert.strictEqual(result.migrated, true);
+  assert.strictEqual(result.source, 'managed-v1');
+  assert.strictEqual(result.config.managed_config_schema_version, 2);
+  assert.strictEqual(result.config.product_scope, 'zotero-pi-only');
+  assert.strictEqual(result.config.api_token, 'stable-token');
+  assert.strictEqual(result.config.pi.session_dir, path.join(bridgeHome, 'pi-sessions'));
+  assert.strictEqual(Object.hasOwn(result.config, 'metadata_dir'), false);
+  assert.strictEqual(Object.hasOwn(result.config, 'notes_dir'), false);
+  assert.strictEqual(Object.hasOwn(result.config, 'obsidian'), false);
+  const state = JSON.parse(fs.readFileSync(path.join(bridgeHome, 'migration-state.json'), 'utf8'));
+  assert.strictEqual(state.source, 'managed-v1');
+})().catch((error)=>{ console.error(error); process.exitCode=1; });
+"""
+            result = subprocess.run(
+                ["node", "-e", script, str(root)],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_release_scan_rejects_no_machine_paths_or_tokens(self) -> None:
         result = subprocess.run(

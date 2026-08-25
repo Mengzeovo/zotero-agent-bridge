@@ -10,6 +10,7 @@ from typing import Any
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from zotero_agent_bridge.config import Settings
 from zotero_agent_bridge.models import (
     ASSISTANT_IMAGE_MIME_TYPES,
     ASSISTANT_MAX_IMAGES,
@@ -174,6 +175,27 @@ class PiOnlyContractTest(unittest.TestCase):
         package_root = ROOT / "zotero_agent_bridge"
         self.assertTrue(all(not (package_root / name).exists() for name in retired_implementations))
         self.assertTrue((package_root / "mcp_server.py").exists(), "CLI retirement shell is handled in step 15")
+
+    def test_runtime_settings_exclude_mirror_and_obsidian_but_preserve_identity_paths(self) -> None:
+        self.assertEqual(
+            set(Settings.__dataclass_fields__),
+            {
+                "host",
+                "port",
+                "api_token",
+                "zotero_local_api_base",
+                "bridge_home",
+                "addon_timeout_seconds",
+                "addon_status_ttl_seconds",
+                "user_agent",
+                "base_attachment_path",
+                "pi",
+                "lifecycle_owner_id",
+                "lifecycle_owner_token",
+                "lifecycle_addon_exit_grace_seconds",
+                "lifecycle_watchdog_interval_seconds",
+            },
+        )
 
     def test_zotero_local_client_exposes_only_pi_bundle_operations(self) -> None:
         public_methods = {
