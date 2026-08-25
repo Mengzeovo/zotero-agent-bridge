@@ -1463,6 +1463,27 @@ def build_service(settings: Settings | None = None) -> BridgeService:
     return BridgeService(settings or Settings.from_env())
 
 
+_RETIRED_HTTP_ROUTES = (
+    ("GET", "/capabilities"),
+    ("GET", "/collections"),
+    ("GET", "/collections/{collection_key}"),
+    ("POST", "/collections"),
+    ("PATCH", "/collections/{collection_key}"),
+    ("GET", "/items/search"),
+    ("GET", "/items/{item_key}"),
+    ("POST", "/items"),
+    ("PATCH", "/items/{item_key}"),
+    ("POST", "/items/{item_key}/attachments/linked-pdf"),
+    ("POST", "/items/{item_key}/notes"),
+    ("POST", "/sync/export"),
+    ("POST", "/obsidian/notes/prepare-sync"),
+    ("POST", "/obsidian/notes/{note_key}/sync-status"),
+    ("POST", "/obsidian/reindex"),
+    ("GET", "/obsidian/open/{stable_id}"),
+    ("POST", "/assistant/session/close"),
+)
+
+
 def create_app(
     settings: Settings | None = None,
     service: BridgeService | None = None,
@@ -1482,7 +1503,7 @@ def create_app(
             lifecycle.stop_watchdog()
             service.shutdown()
 
-    app = FastAPI(title="Zotero Agent Bridge", version=BRIDGE_VERSION, lifespan=lifespan)
+    app = FastAPI(title="Zotero Pi Assistant Private Bridge", version=BRIDGE_VERSION, lifespan=lifespan)
     app.state.bridge_lifecycle = lifecycle
 
     def authorize(
@@ -1519,53 +1540,22 @@ def create_app(
         lifecycle.request_shutdown(x_bridge_owner_token)
         return {"status": "shutting_down", "owner_id": lifecycle.owner_id}
 
-    @app.get("/capabilities", dependencies=[Depends(authorize)])
-    def capabilities() -> dict[str, Any]:
-        return service.capabilities()
+    def retired_feature() -> None:
+        raise BridgeError(
+            410,
+            "feature_retired",
+            "This integration surface is no longer supported by Zotero Pi Assistant.",
+            {"product_scope": "zotero-pi-only", "transition_release": "0.4.0-beta"},
+        )
 
-    @app.get("/collections", dependencies=[Depends(authorize)])
-    def list_collections() -> list[CollectionRecord]:
-        return service.list_collections()
-
-    @app.get("/collections/{collection_key}", dependencies=[Depends(authorize)])
-    def get_collection(collection_key: str) -> CollectionRecord:
-        return service.get_collection(collection_key)
-
-    @app.post("/collections", dependencies=[Depends(authorize)])
-    def create_collection(request: CreateCollectionRequest) -> CollectionRecord:
-        return service.create_collection(request)
-
-    @app.patch("/collections/{collection_key}", dependencies=[Depends(authorize)])
-    def update_collection(collection_key: str, request: UpdateCollectionRequest) -> CollectionRecord:
-        return service.update_collection(collection_key, request)
-
-    @app.get("/items/search", dependencies=[Depends(authorize)])
-    def search_items(q: str = Query(..., min_length=1), limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
-        return {"items": service.search_items(q, limit=limit)}
-
-    @app.get("/items/{item_key}", dependencies=[Depends(authorize)])
-    def get_item(item_key: str) -> dict[str, Any]:
-        return service.get_item(item_key)
-
-    @app.post("/items", dependencies=[Depends(authorize)])
-    def create_item(request: CreateItemRequest) -> StableWriteResponse:
-        return service.create_item(request)
-
-    @app.patch("/items/{item_key}", dependencies=[Depends(authorize)])
-    def update_item(item_key: str, request: UpdateItemRequest) -> StableWriteResponse:
-        return service.update_item(item_key, request)
-
-    @app.post("/items/{item_key}/attachments/linked-pdf", dependencies=[Depends(authorize)])
-    def attach_linked_pdf(item_key: str, request: AttachLinkedPdfRequest) -> StableWriteResponse:
-        return service.attach_linked_pdf(item_key, request)
-
-    @app.post("/items/{item_key}/notes", dependencies=[Depends(authorize)])
-    def create_note(item_key: str, request: CreateNoteRequest) -> StableWriteResponse:
-        return service.create_note(item_key, request)
-
-    @app.post("/sync/export", dependencies=[Depends(authorize)])
-    def export_items(request: SyncExportRequest) -> dict[str, Any]:
-        return service.export_items(request)
+    for retired_method, retired_path in _RETIRED_HTTP_ROUTES:
+        app.add_api_route(
+            retired_path,
+            retired_feature,
+            methods=[retired_method],
+            dependencies=[Depends(authorize)],
+            include_in_schema=False,
+        )
 
     @app.post(
         "/assistant/session/open",
@@ -1635,10 +1625,6 @@ def create_app(
     def abort_assistant_session() -> dict[str, Any]:
         return service.abort_assistant_session()
 
-    @app.post("/assistant/session/close", dependencies=[Depends(authorize)])
-    def close_assistant_session() -> dict[str, Any]:
-        return service.close_assistant_session()
-
     @app.post(
         "/assistant/session/reset",
         dependencies=[Depends(authorize)],
@@ -1646,22 +1632,6 @@ def create_app(
     )
     def reset_assistant_session() -> AssistantSessionOpenResponse:
         return service.reset_assistant_session()
-
-    @app.post("/obsidian/notes/prepare-sync", dependencies=[Depends(authorize)])
-    def prepare_obsidian_note_sync(request: PrepareObsidianNoteSyncRequest) -> ObsidianNoteSyncPrepared:
-        return service.prepare_obsidian_note_sync(request)
-
-    @app.post("/obsidian/notes/{note_key}/sync-status", dependencies=[Depends(authorize)])
-    def update_obsidian_note_sync_status(note_key: str, request: ObsidianSyncStatusRequest) -> dict[str, Any]:
-        return service.update_obsidian_note_sync_status(note_key, request)
-
-    @app.post("/obsidian/reindex", dependencies=[Depends(authorize)])
-    def reindex_obsidian(request: ObsidianReindexRequest) -> dict[str, Any]:
-        return service.reindex_obsidian(request)
-
-    @app.get("/obsidian/open/{stable_id}")
-    def open_obsidian(stable_id: str, token: str = Query(..., min_length=1)) -> RedirectResponse:
-        return RedirectResponse(service.obsidian_open_uri(stable_id, token), status_code=302)
 
     return app
 
