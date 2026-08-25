@@ -491,6 +491,65 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         )
         self.assertIn("pid: process.pid", bootstrap)
 
+    def test_lifecycle_v2_classification_preserves_v1_transition_in_node(self) -> None:
+        script = f"""
+const assert = require('assert');
+const test = require({json.dumps(str(BOOTSTRAP_SCRIPT))}).__test;
+assert.strictEqual(test.PI_ONLY_LIFECYCLE_PROTOCOL_VERSION, 2);
+assert.strictEqual(test.TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION, 1);
+assert.strictEqual(test.PI_ONLY_PRODUCT_SCOPE, 'zotero-pi-only');
+const current = test.classifyBridgeLifecycle({{
+  pid: 42,
+  bridge_version: '0.3.5',
+  protocol_version: 2,
+  product_scope: 'zotero-pi-only',
+  distribution: 'xpi-bundled',
+}}, {{
+  bundled: true,
+  expectedBundleVersion: '0.3.5',
+  expectedBundleProtocolVersion: 2,
+}});
+assert.strictEqual(current.compatible, true);
+assert.strictEqual(current.piOnly, true);
+assert.strictEqual(current.transitional, false);
+assert.strictEqual(current.productScope, 'zotero-pi-only');
+const v1 = test.classifyBridgeLifecycle({{
+  pid: 43,
+  bridge_version: '0.3.5',
+  protocol_version: 1,
+  distribution: 'xpi-bundled',
+}});
+assert.strictEqual(v1.compatible, true);
+assert.strictEqual(v1.legacy, true);
+assert.strictEqual(v1.transitional, true);
+assert.strictEqual(v1.piOnly, false);
+assert.strictEqual(v1.productScope, 'legacy-agent-bridge');
+const legacy = test.classifyBridgeLifecycle({{status: 'ok'}});
+assert.strictEqual(legacy.protocolVersion, 0);
+assert.strictEqual(legacy.transitional, true);
+assert.throws(
+  () => test.classifyBridgeLifecycle({{
+    pid: 44,
+    bridge_version: '0.3.5',
+    protocol_version: 2,
+    product_scope: 'general-agent-bridge',
+    distribution: 'xpi-bundled',
+  }}),
+  (error) => error.code === 'bridge_protocol_incompatible',
+);
+assert.throws(
+  () => test.classifyBridgeLifecycle({{
+    pid: 45,
+    bridge_version: '0.3.5',
+    protocol_version: 1,
+    distribution: 'xpi-bundled',
+  }}, {{bundled: true, expectedBundleVersion: '0.3.5', expectedBundleProtocolVersion: 2}}),
+  (error) => error.code === 'bridge_bundle_runtime_mismatch',
+);
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
     def test_panel_styles_accessibility_and_localization_resources(self) -> None:
         styles = PANEL_STYLE.read_text(encoding="utf-8")
         self.assertIn(":focus-visible", styles)
@@ -626,7 +685,8 @@ const exeBytes = Buffer.from('fake bridge exe v2');
 fs.writeFileSync(path.join(bundleSourceDir, 'zab-bridge', 'zab-bridge.exe'), exeBytes);
 const manifest = {
   bundle_schema_version: 1,
-  protocol_version: 1,
+  protocol_version: 2,
+  product_scope: 'zotero-pi-only',
   distribution: 'xpi-bundled',
   platform: 'windows',
   architecture: 'x64',
@@ -651,7 +711,8 @@ fs.mkdirSync(staleRoot, { recursive: true });
 fs.writeFileSync(path.join(staleRoot, '.zab-bundle-installed.json'), JSON.stringify({
   sentinel_schema_version: 1,
   bridge_version: '0.3.5',
-  protocol_version: 1,
+  protocol_version: 2,
+  product_scope: 'zotero-pi-only',
   manifest_sha256: 'stale-manifest-hash',
   installed_at: '2026-01-01T00:00:00.000Z',
   entrypoint: 'zab-bridge/zab-bridge.exe',
@@ -733,6 +794,8 @@ globalThis.Components = Components;
   assert.strictEqual(quarantined.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(installRoot, quarantined[0], 'zab-bridge-placeholder.txt'), 'utf8'), 'old install');
   const sentinel = JSON.parse(fs.readFileSync(path.join(installed.versionRoot, '.zab-bundle-installed.json'), 'utf8'));
+  assert.strictEqual(sentinel.protocol_version, 2);
+  assert.strictEqual(sentinel.product_scope, 'zotero-pi-only');
   assert.strictEqual(sentinel.manifest_sha256, manifestSha256);
   assert.ok(logs.some((entry) => entry.message === 'bridge_bundle_existing_quarantined'));
   assert.ok(logs.some((entry) => entry.message === 'bridge_bundle_installed'));

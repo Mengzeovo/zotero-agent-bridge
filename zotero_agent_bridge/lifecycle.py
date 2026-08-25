@@ -10,7 +10,7 @@ from typing import Any
 from .config import Settings
 from .errors import BridgeError
 from .utils import now_iso
-from .version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSION, bridge_distribution
+from .version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSION, PRODUCT_SCOPE, bridge_distribution
 
 
 ShutdownCallback = Callable[[], None]
@@ -44,6 +44,7 @@ class BridgeLifecycleController:
             "exit_with_addon": self.managed,
             "bridge_version": BRIDGE_VERSION,
             "protocol_version": LIFECYCLE_PROTOCOL_VERSION,
+            "product_scope": PRODUCT_SCOPE,
             "distribution": bridge_distribution(),
         }
 
