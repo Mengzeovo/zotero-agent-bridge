@@ -1,14 +1,14 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:ebfbd54d6ff5a5fd12bf3e7e43180d8c",
+  "serialNumber": "urn:uuid:1ffecbee600dfbe3e8b17f2b397563d7",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-08-19T08:13:44.636347Z",
+    "timestamp": "2026-08-25T07:44:45.233648Z",
     "component": {
       "type": "application",
-      "name": "zotero-agent-bridge",
-      "version": "0.3.0",
+      "name": "zotero-pi-assistant",
+      "version": "0.4.0-beta",
       "properties": [
         {
           "name": "zab:distribution",
@@ -24,7 +24,7 @@
         },
         {
           "name": "zab:bundle-manifest-sha256",
-          "value": "ebfbd54d6ff5a5fd12bf3e7e43180d8cff407f011cc7abde34ac86b497a6c2fe"
+          "value": "1ffecbee600dfbe3e8b17f2b397563d7a62e700448f7c33f2792218b797d6806"
         }
       ]
     }
@@ -183,12 +183,6 @@
       "name": "uvicorn",
       "version": "0.52.4",
       "purl": "pkg:pypi/uvicorn@0.52.4"
-    },
-    {
-      "type": "library",
-      "name": "zotero-agent-bridge",
-      "version": "0.3.0",
-      "purl": "pkg:pypi/zotero-agent-bridge@0.3.0"
     }
   ]
 }

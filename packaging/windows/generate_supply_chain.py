@@ -10,7 +10,6 @@ from pathlib import Path
 
 
 RUNTIME_PACKAGES = {
-    "zotero-agent-bridge",
     "fastapi",
     "markdown",
     "pydantic",
@@ -74,7 +73,7 @@ def generate(bundle_manifest: Path, sbom_path: Path, notices_path: Path) -> None
         0,
         {
             "type": "application",
-            "name": "zotero-agent-bridge",
+            "name": "zotero-pi-assistant",
             "version": manifest["bridge_version"],
             "properties": [
                 {"name": "zab:distribution", "value": manifest["distribution"]},
