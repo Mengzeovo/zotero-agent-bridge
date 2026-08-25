@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,18 +80,18 @@ class PiOnlyContractTest(unittest.TestCase):
         cls.retired = policy_routes(cls.policy, "retired_http_routes")
         cls.routes = application_routes()
 
-    def test_product_metadata_is_zotero_pi_assistant_040_beta(self) -> None:
+    def test_product_metadata_is_zotero_pi_assistant_041_beta(self) -> None:
         manifest = json.loads((ROOT / "zotero_companion_addon" / "manifest.json").read_text(encoding="utf-8-sig"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         bootstrap = BOOTSTRAP_PATH.read_text(encoding="utf-8-sig")
         self.assertEqual(PRODUCT_NAME, "Zotero Pi Assistant")
         self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
-        self.assertEqual(BRIDGE_VERSION, "0.4.0-beta")
+        self.assertEqual(BRIDGE_VERSION, "0.4.1-beta")
         self.assertEqual(manifest["name"], PRODUCT_NAME)
         self.assertEqual(manifest["version"], BRIDGE_VERSION)
         self.assertEqual(manifest["applications"]["zotero"]["id"], "zotero-agent-bridge@local")
         self.assertTrue(readme.startswith("# Zotero Pi Assistant"))
-        self.assertIn("**当前版本：0.4.0-beta**", readme)
+        self.assertIn("**当前版本：0.4.1-beta**", readme)
         self.assertNotIn("syncSelectedNoteToObsidian", bootstrap)
         self.assertNotIn("Sync to Obsidian", bootstrap)
 
@@ -104,16 +102,16 @@ class PiOnlyContractTest(unittest.TestCase):
         self.assertEqual(self.policy["baseline_version"], "0.3.5")
         self.assertEqual(self.policy["transition_release"], "0.4.0-beta")
         self.assertEqual(self.policy["final_removal_release"], "0.4.1-beta")
-        self.assertEqual(self.policy["transition_error"]["http_status"], 410)
-        self.assertEqual(self.policy["transition_error"]["code"], "feature_retired")
+        self.assertEqual(self.policy["stage_2"]["release"], "0.4.1-beta")
+        self.assertEqual(self.policy["stage_2"]["http_behavior"], "Transition routes are unregistered and return 404.")
         self.assertEqual(len(self.retained), 17)
         self.assertEqual(len(self.retired), 17)
         self.assertFalse(self.retained & self.retired)
         self.assertEqual(len(self.retained), len(self.policy["retained_http_routes"]))
         self.assertEqual(len(self.retired), len(self.policy["retired_http_routes"]))
 
-    def test_current_application_surface_is_exhaustively_classified(self) -> None:
-        self.assertEqual(set(self.routes), self.retained | self.retired)
+    def test_current_application_surface_is_exactly_the_retained_surface(self) -> None:
+        self.assertEqual(set(self.routes), self.retained)
 
     def test_every_retained_route_requires_bridge_authentication(self) -> None:
         for route_pair in sorted(self.retained):
@@ -122,29 +120,17 @@ class PiOnlyContractTest(unittest.TestCase):
                 self.assertGreaterEqual(len(route.dependencies), 1)
                 self.assertGreaterEqual(len(route.dependant.dependencies), 1)
 
-    def test_every_retired_route_is_an_authenticated_side_effect_free_410_shell(self) -> None:
+    def test_every_retired_route_is_physically_unregistered_and_returns_404(self) -> None:
         settings = SimpleNamespace(api_token="pi-contract-token")
         service = SimpleNamespace(settings=settings)
         app = create_app(settings=settings, service=service, lifecycle=SimpleNamespace())
         client = TestClient(app)
-        expected_error = self.policy["transition_error"]
         for method, route_path in sorted(self.retired):
             concrete_path = re.sub(r"\{[^}]+\}", "RETIREDKEY", route_path)
-            with self.subTest(method=method, path=route_path, auth="missing"):
-                response = client.request(method, concrete_path, json={})
-                self.assertEqual(response.status_code, 401)
-            with self.subTest(method=method, path=route_path, auth="valid"):
-                response = client.request(
-                    method,
-                    concrete_path,
-                    headers={"X-Bridge-Token": settings.api_token},
-                    json={},
-                )
-                self.assertEqual(response.status_code, expected_error["http_status"], response.text)
-                payload = response.json()["error"]
-                self.assertEqual(payload["code"], expected_error["code"])
-                self.assertEqual(payload["message"], expected_error["message"])
-                self.assertEqual(payload["details"]["product_scope"], self.policy["product_scope"])
+            for headers in ({}, {"X-Bridge-Token": settings.api_token}):
+                with self.subTest(method=method, path=route_path, authenticated=bool(headers)):
+                    response = client.request(method, concrete_path, headers=headers, json={})
+                    self.assertEqual(response.status_code, 404, response.text)
 
     def test_pi_panel_calls_exact_retained_assistant_surface(self) -> None:
         expected = {route for route in self.retained if route[1].startswith("/assistant/")}
@@ -176,27 +162,16 @@ class PiOnlyContractTest(unittest.TestCase):
                 self.assertIsNotNone(model)
                 self.assertEqual(model.__name__, model_name)
 
-    def test_retired_cli_and_scripts_are_explicit_nonzero_compatibility_shells(self) -> None:
+    def test_retired_cli_modules_entry_points_and_scripts_are_physically_absent(self) -> None:
         for relative_path in self.policy["retired_scripts"]:
             with self.subTest(path=relative_path):
-                path = ROOT / relative_path
-                self.assertTrue(path.is_file())
-                source = path.read_text(encoding="utf-8-sig")
-                self.assertTrue("feature_retired" in source or "retired_main" in source)
-        mcp_source = (ROOT / "zotero_agent_bridge" / "mcp_server.py").read_text(encoding="utf-8")
-        self.assertIn("retired_main", mcp_source)
-        self.assertNotIn("requests", mcp_source)
-        self.assertNotIn("build_server", mcp_source)
-        result = subprocess.run(
-            [sys.executable, "-m", "zotero_agent_bridge.mcp_server"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("feature_retired", result.stderr)
-        self.assertIn("built-in Pi literature assistant", result.stderr)
+                self.assertFalse((ROOT / relative_path).exists())
+        package_root = ROOT / "zotero_agent_bridge"
+        self.assertFalse((package_root / "mcp_server.py").exists())
+        self.assertFalse((package_root / "retirement.py").exists())
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertNotIn("zotero-agent-bridge-mcp", pyproject)
+        self.assertNotIn("mcp_server", pyproject)
 
     def test_retired_addon_frontend_resources_are_absent(self) -> None:
         for relative_path in self.policy["retired_addon_resources"]:
@@ -211,10 +186,11 @@ class PiOnlyContractTest(unittest.TestCase):
             "obsidian.py",
             "paper_classifier.py",
             "pdf_tools.py",
+            "mcp_server.py",
+            "retirement.py",
         }
         package_root = ROOT / "zotero_agent_bridge"
         self.assertTrue(all(not (package_root / name).exists() for name in retired_implementations))
-        self.assertTrue((package_root / "mcp_server.py").exists(), "CLI retirement shell is handled in step 15")
 
     def test_runtime_settings_exclude_mirror_and_obsidian_but_preserve_identity_paths(self) -> None:
         self.assertEqual(

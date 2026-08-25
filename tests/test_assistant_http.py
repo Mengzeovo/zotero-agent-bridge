@@ -650,8 +650,7 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertEqual(self.pi_chat.events, [])
 
         closed = self.client.post("/assistant/session/close", headers=self.headers)
-        self.assertEqual(closed.status_code, 410)
-        self.assertEqual(closed.json()["error"]["code"], "feature_retired")
+        self.assertEqual(closed.status_code, 404)
         status = self.client.get("/assistant/session/status", headers=self.headers)
         self.assertTrue(status.json()["context_prepared"])
 
@@ -977,8 +976,7 @@ Keep code `\(literal\)` unchanged.
         self.assertTrue(first.json()["context_injected"])
 
         retired_close = self.client.post("/assistant/session/close", headers=self.headers)
-        self.assertEqual(retired_close.status_code, 410)
-        self.assertEqual(retired_close.json()["error"]["code"], "feature_retired")
+        self.assertEqual(retired_close.status_code, 404)
         resumed = self._open()
         self.assertEqual(resumed.status_code, 200)
         self.assertFalse(resumed.json()["context_injection_required"])
