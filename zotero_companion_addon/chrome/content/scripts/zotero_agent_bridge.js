@@ -1,4 +1,4 @@
-﻿var ZoteroAgentBridge = (() => {
+var ZoteroAgentBridge = (() => {
   const ADDON_VERSION = "0.3.5";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
@@ -192,20 +192,8 @@
   async function processCommand(request) {
     validateRequest(request);
     switch (request.command) {
-      case "create_item":
-        return await handleCreateItem(request);
-      case "update_item":
-        return await handleUpdateItem(request);
-      case "attach_linked_pdf":
-        return await handleAttachLinkedPdf(request);
       case "create_assistant_note":
         return await handleCreateAssistantNote(request);
-      case "create_note":
-        return await handleCreateNote(request);
-      case "create_collection":
-        return await handleCreateCollection(request);
-      case "update_collection":
-        return await handleUpdateCollection(request);
       default:
         throw new BridgeError("unsupported_command", `Unsupported command: ${request.command}`);
     }
@@ -226,95 +214,6 @@
     }
   }
 
-  async function handleCreateItem(request) {
-    const payload = request.payload;
-    const itemType = payload.item_type || "journalArticle";
-    const item = new Zotero.Item(itemType);
-    item.libraryID = resolveLibraryID(payload.library_id);
-    applyFields(item, payload.fields || {});
-    applyCreators(item, payload.creators || []);
-    applyTags(item, payload.tags || []);
-    applyCollections(item, payload.collections || []);
-    await item.saveTx();
-
-    return buildSuccessResponse(request.request_id, {
-      library_id: item.libraryID,
-      item_key: item.key,
-      attachment_key: null,
-      note_key: null,
-      sync_status: payload.sync_status || "synced",
-      version: item.version,
-    });
-  }
-
-  async function handleUpdateItem(request) {
-    const payload = request.payload;
-    const item = await getItemByKey(payload.item_key, payload.library_id);
-    if (payload.version !== undefined && item.version !== payload.version) {
-      throw new BridgeError("version_conflict", "Item version conflict", {
-        expected: payload.version,
-        actual: item.version,
-        item_key: item.key,
-      });
-    }
-
-    if (payload.fields) {
-      applyFields(item, payload.fields);
-    }
-    if (payload.creators) {
-      applyCreators(item, payload.creators);
-    }
-    if (payload.tags) {
-      applyTags(item, payload.tags);
-    }
-    if (payload.collections) {
-      applyCollections(item, payload.collections);
-    }
-
-    await item.saveTx();
-
-    return buildSuccessResponse(request.request_id, {
-      library_id: item.libraryID,
-      item_key: item.key,
-      attachment_key: null,
-      note_key: null,
-      sync_status: payload.sync_status || "synced",
-      version: item.version,
-    });
-  }
-
-  async function handleAttachLinkedPdf(request) {
-    const payload = request.payload;
-    const parent = await getItemByKey(payload.item_key, payload.library_id);
-    const normalized = await normalizeAttachmentPath(payload.path);
-
-    let attachment;
-    if (normalized.relativePath) {
-      attachment = await Zotero.Attachments.linkFromFileWithRelativePath({
-        path: normalized.relativePath,
-        title: payload.title || PathUtils.filename(normalized.absolutePath),
-        contentType: payload.content_type || "application/pdf",
-        parentItemID: parent.id,
-      });
-    } else {
-      attachment = await Zotero.Attachments.linkFromFile({
-        file: normalized.absolutePath,
-        title: payload.title || PathUtils.filename(normalized.absolutePath),
-        contentType: payload.content_type || "application/pdf",
-        parentItemID: parent.id,
-      });
-    }
-
-    return buildSuccessResponse(request.request_id, {
-      library_id: parent.libraryID,
-      item_key: parent.key,
-      attachment_key: attachment.key,
-      note_key: null,
-      sync_status: payload.sync_status || "synced",
-      version: attachment.version,
-    });
-  }
-
   async function handleCreateAssistantNote(request) {
     const payload = request.payload;
     if (!/^[0-9a-f]{64}$/i.test(String(payload.document_id || ""))) {
@@ -326,10 +225,10 @@
     if (!String(payload.attachment_key || "").trim()) {
       throw new BridgeError("invalid_request", "Assistant attachment_key is required");
     }
-    return await handleCreateNote(request);
+    return await createAssistantNoteItem(request);
   }
 
-  async function handleCreateNote(request) {
+  async function createAssistantNoteItem(request) {
     const payload = request.payload;
     const parent = await getItemByKey(payload.item_key, payload.library_id);
     const note = new Zotero.Item("note");
@@ -349,109 +248,11 @@
     });
   }
 
-  async function handleCreateCollection(request) {
-    const payload = request.payload;
-    const name = String(payload.name || "").trim();
-    if (!name) {
-      throw new BridgeError("invalid_request", "Collection name is required");
-    }
-
-    const collection = new Zotero.Collection();
-    collection.libraryID = resolveLibraryID(payload.library_id);
-    collection.name = name;
-    if (payload.parent_key) {
-      const parent = await getCollectionByKey(payload.parent_key, collection.libraryID, "parent_collection_not_found");
-      collection.parentID = parent.id;
-    }
-    await collection.saveTx();
-
-    return buildSuccessResponse(request.request_id, {
-      library_id: collection.libraryID,
-      collection_key: collection.key,
-      version: collection.version,
-      name: collection.name,
-      parent_key: payload.parent_key || null,
-    });
-  }
-
-  async function handleUpdateCollection(request) {
-    const payload = request.payload;
-    const collection = await getCollectionByKey(payload.collection_key, payload.library_id);
-    if (payload.version !== undefined && collection.version !== payload.version) {
-      throw new BridgeError("version_conflict", "Collection version conflict", {
-        expected: payload.version,
-        actual: collection.version,
-        collection_key: collection.key,
-      });
-    }
-
-    if (payload.name !== undefined && payload.name !== null) {
-      const name = String(payload.name).trim();
-      if (!name) {
-        throw new BridgeError("invalid_request", "Collection name is required");
-      }
-      collection.name = name;
-    }
-    if (Object.prototype.hasOwnProperty.call(payload, "parent_key")) {
-      if (payload.parent_key && payload.parent_key === payload.collection_key) {
-        throw new BridgeError("invalid_parent_collection", "Collection cannot be its own parent");
-      }
-      if (payload.parent_key) {
-        const parent = await getCollectionByKey(payload.parent_key, collection.libraryID, "parent_collection_not_found");
-        collection.parentID = parent.id;
-      } else {
-        collection.parentID = null;
-      }
-    }
-    await collection.saveTx();
-
-    return buildSuccessResponse(request.request_id, {
-      library_id: collection.libraryID,
-      collection_key: collection.key,
-      version: collection.version,
-      name: collection.name,
-      parent_key: Object.prototype.hasOwnProperty.call(payload, "parent_key")
-        ? (payload.parent_key || null)
-        : (collection.parentKey || null),
-    });
-  }
-
   function resolveLibraryID(libraryID) {
     if (libraryID === undefined || libraryID === null || libraryID === 0) {
       return Zotero.Libraries.userLibraryID;
     }
     return libraryID;
-  }
-
-  function applyFields(item, fields) {
-    for (const [field, value] of Object.entries(fields)) {
-      if (value === null || value === undefined) {
-        continue;
-      }
-      item.setField(field, value);
-    }
-  }
-
-  function applyCreators(item, creators) {
-    item.setCreators(creators, { strict: false });
-  }
-
-  function applyTags(item, tags) {
-    item.setTags(
-      tags.map((tag) => {
-        if (typeof tag === "string") {
-          return tag;
-        }
-        return {
-          tag: tag.tag,
-          type: tag.type || 0,
-        };
-      }),
-    );
-  }
-
-  function applyCollections(item, collections) {
-    item.setCollections(collections);
   }
 
   async function getItemByKey(itemKey, libraryID) {
@@ -463,55 +264,6 @@
       });
     }
     return item;
-  }
-
-  async function getCollectionByKey(collectionKey, libraryID, errorCode = "collection_not_found") {
-    const resolvedLibraryID = resolveLibraryID(libraryID);
-    const collection = Zotero.Collections.getByLibraryAndKey(resolvedLibraryID, collectionKey);
-    if (!collection) {
-      throw new BridgeError(errorCode, `Collection not found: ${collectionKey}`, {
-        library_id: resolvedLibraryID,
-      });
-    }
-    return collection;
-  }
-
-  async function normalizeAttachmentPath(inputPath) {
-    if (!inputPath || typeof inputPath !== "string") {
-      throw new BridgeError("invalid_attachment_path", "Attachment path is required");
-    }
-
-    const cleaned = inputPath.replace(/\//g, "\\");
-    const basePath = Zotero.Prefs.get("extensions.zotero.baseAttachmentPath");
-    const absolutePath = PathUtils.isAbsolute(cleaned)
-      ? PathUtils.normalize(cleaned)
-      : basePath
-        ? PathUtils.normalize(PathUtils.join(basePath, cleaned))
-        : PathUtils.normalize(PathUtils.join(state.bridgeHome, cleaned));
-
-    if (!(await IOUtils.exists(absolutePath))) {
-      throw new BridgeError("invalid_attachment_path", `Attachment not found: ${inputPath}`);
-    }
-
-    const saveRelative = Zotero.Prefs.get("extensions.zotero.saveRelativeAttachmentPath");
-    if (basePath && saveRelative) {
-      const normalizedBase = PathUtils.normalize(basePath);
-      if (absolutePath.startsWith(normalizedBase)) {
-        const relativePath = absolutePath
-          .slice(normalizedBase.length)
-          .replace(/^[\\/]+/, "")
-          .replace(/\\/g, "/");
-        return {
-          absolutePath,
-          relativePath,
-        };
-      }
-    }
-
-    return {
-      absolutePath,
-      relativePath: null,
-    };
   }
 
   function buildSuccessResponse(requestId, result) {
