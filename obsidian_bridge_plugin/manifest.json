@@ -1,9 +1,0 @@
-{
-  "id": "zotero-agent-bridge",
-  "name": "Zotero Agent Bridge",
-  "version": "0.1.0",
-  "minAppVersion": "1.5.0",
-  "description": "Controls the local Zotero Agent Bridge service and syncs Zotero notes through Obsidian.",
-  "author": "Zotero Agent Bridge",
-  "isDesktopOnly": true
-}

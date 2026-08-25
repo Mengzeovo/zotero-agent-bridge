@@ -157,6 +157,11 @@ class PiOnlyContractTest(unittest.TestCase):
                 self.assertIsNotNone(model)
                 self.assertEqual(model.__name__, model_name)
 
+    def test_retired_addon_frontend_resources_are_absent(self) -> None:
+        for relative_path in self.policy["retired_addon_resources"]:
+            with self.subTest(path=relative_path):
+                self.assertFalse((ROOT / relative_path).exists())
+
     def test_retired_python_implementation_modules_are_absent(self) -> None:
         retired_implementations = {
             "collection_tree.py",

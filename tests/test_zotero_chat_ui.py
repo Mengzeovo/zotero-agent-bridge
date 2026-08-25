@@ -448,7 +448,6 @@ assert.strictEqual(reader.entry.bodies.has(transientBody), false);
     def test_assistant_note_uses_dedicated_validated_queue_command(self) -> None:
         sources = [
             (ROOT / "zotero_companion_addon" / "bootstrap.js").read_text(encoding="utf-8-sig"),
-            (ADDON / "chrome" / "content" / "scripts" / "zotero_agent_bridge.js").read_text(encoding="utf-8-sig"),
         ]
         for source in sources:
             command_switch = source.split("async function processCommand(request)", 1)[1].split(
@@ -630,9 +629,8 @@ assert.throws(
         manifest = json.loads((ADDON / "manifest.json").read_text(encoding="utf-8-sig"))
         rdf_root = ET.parse(ADDON / "install.rdf").getroot()
         bootstrap = (ADDON / "bootstrap.js").read_text(encoding="utf-8-sig")
-        legacy = (ADDON / "chrome" / "content" / "scripts" / "zotero_agent_bridge.js").read_text(
-            encoding="utf-8-sig"
-        )
+        legacy_script = ADDON / "chrome" / "content" / "scripts" / "zotero_agent_bridge.js"
+        self.assertFalse(legacy_script.exists())
         version = manifest["version"]
         self.assertEqual(version, "0.3.5")
         zotero_manifest = manifest["applications"]["zotero"]
@@ -648,7 +646,6 @@ assert.throws(
         self.assertIn("9.0.*", max_nodes)
         self.assertIn(zotero_manifest["update_url"], update_nodes)
         self.assertIn(f'ADDON_VERSION = "{version}"', bootstrap)
-        self.assertIn(f'ADDON_VERSION = "{version}"', legacy)
 
     def test_built_xpi_contains_chat_resources(self) -> None:
         self.assertTrue(XPI.is_file(), "Build the add-on XPI before running the complete validation suite")
