@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from zotero_agent_bridge.config import PiSettings, Settings
 from zotero_agent_bridge.errors import BridgeError
 from zotero_agent_bridge.lifecycle import BridgeLifecycleController
-from zotero_agent_bridge.mirror import MirrorStore
 from zotero_agent_bridge.reading_context import ReadingContext
 from zotero_agent_bridge.service import BridgeService, _build_literature_bootstrap_prompt, create_app
 
@@ -408,7 +407,6 @@ class AssistantHttpTest(unittest.TestCase):
         return BridgeService(
             settings,
             local_client=self.local,
-            mirror=MirrorStore(settings.metadata_dir, settings.notes_dir),
             writer=self.writer,
             pi_chat=self.pi_chat,
             reading_context_builder=self.context_builder,
@@ -755,16 +753,16 @@ class AssistantHttpTest(unittest.TestCase):
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer, "stopReason": "stop"},
         ]
-        with patch.object(self.service, "create_note", side_effect=AssertionError("generic note path used")):
-            response = self.client.post(
-                "/assistant/session/save-note",
-                headers=self.headers,
-                json=self._save_payload(
-                    answer,
-                    question,
-                    title="  # Custom `<Reading>` Record  ",
-                ),
-            )
+        self.assertFalse(hasattr(self.service, "create_note"))
+        response = self.client.post(
+            "/assistant/session/save-note",
+            headers=self.headers,
+            json=self._save_payload(
+                answer,
+                question,
+                title="  # Custom `<Reading>` Record  ",
+            ),
+        )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual(payload["item_key"], ITEM_KEY)
@@ -1280,7 +1278,6 @@ Keep code `\(literal\)` unchanged.
         service = BridgeService(
             self.settings,
             local_client=self.local,
-            mirror=MirrorStore(self.settings.metadata_dir, self.settings.notes_dir),
             writer=self.writer,
             pi_chat=manager,
             reading_context_builder=self.context_builder,
@@ -1297,7 +1294,6 @@ Keep code `\(literal\)` unchanged.
         service = BridgeService(
             self.settings,
             local_client=self.local,
-            mirror=MirrorStore(self.settings.metadata_dir, self.settings.notes_dir),
             writer=self.writer,
             pi_chat=manager,
             reading_context_builder=self.context_builder,

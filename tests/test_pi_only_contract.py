@@ -18,7 +18,7 @@ from zotero_agent_bridge.models import (
     PI_THINKING_LEVELS,
     AssistantSaveNoteRequest,
 )
-from zotero_agent_bridge.service import create_app
+from zotero_agent_bridge.service import BridgeService, create_app
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +155,34 @@ class PiOnlyContractTest(unittest.TestCase):
                 model = self.routes[route_pair].response_model
                 self.assertIsNotNone(model)
                 self.assertEqual(model.__name__, model_name)
+
+    def test_python_service_public_surface_is_pi_only(self) -> None:
+        public_methods = {
+            name
+            for name, value in BridgeService.__dict__.items()
+            if callable(value) and not name.startswith("_")
+        }
+        self.assertEqual(
+            public_methods,
+            {
+                "health",
+                "open_assistant_session",
+                "send_assistant_message",
+                "assistant_events",
+                "assistant_messages",
+                "assistant_session_history",
+                "resume_assistant_session",
+                "assistant_models",
+                "select_assistant_model",
+                "assistant_thinking_levels",
+                "select_assistant_thinking_level",
+                "assistant_status",
+                "save_assistant_note",
+                "abort_assistant_session",
+                "reset_assistant_session",
+                "shutdown",
+            },
+        )
 
     def test_note_save_scope_request_fields_are_frozen(self) -> None:
         self.assertEqual(
