@@ -51,7 +51,7 @@ class BridgeLifecycleControllerTest(unittest.TestCase):
         self.assertTrue(stopped.wait(1.0))
         status = lifecycle.status()
         self.assertEqual(status["owner_id"], "owner-id")
-        self.assertEqual(status["bridge_version"], "0.3.5")
+        self.assertEqual(status["bridge_version"], "0.4.0-beta")
         self.assertEqual(status["protocol_version"], 2)
         self.assertEqual(status["product_scope"], "zotero-pi-only")
         self.assertEqual(status["distribution"], "source")
