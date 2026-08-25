@@ -30,9 +30,9 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertIn("cleanupWindow", panel)
         self.assertIn("state.chatPanel?.cleanupWindow(window)", bootstrap)
         self.assertIn("state.chatPanel?.shutdown()", bootstrap)
-        self.assertIn("menuItems: new Map()", bootstrap)
-        self.assertIn("state.menuItems.set(win, menuItem)", bootstrap)
-        self.assertIn("uninstallMenus(window)", bootstrap)
+        self.assertNotIn("menuItems: new Map()", bootstrap)
+        self.assertNotIn("syncSelectedNoteToObsidian", bootstrap)
+        self.assertNotIn("uninstallMenus(window)", bootstrap)
         self.assertIn("pi_chat_panel.js", bootstrap)
         self.assertIn('insertFTLIfNeeded("zotero-agent-bridge.ftl")', panel)
         self.assertIn("chrome/content/icons/pi-16.svg", panel)
@@ -681,23 +681,26 @@ assert.throws(
             }
             self.assertTrue(expected.issubset(names), sorted(expected - names))
             manifest = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
-            self.assertEqual(manifest["version"], "0.3.5")
+            self.assertEqual(manifest["name"], "Zotero Pi Assistant")
+            self.assertEqual(manifest["version"], "0.4.0-beta")
             bundle_manifest = json.loads(archive.read("bridge/windows-x64/bridge-manifest.json").decode("utf-8"))
-            self.assertEqual(bundle_manifest["bridge_version"], "0.3.5")
-            self.assertEqual(bundle_manifest["protocol_version"], 1)
+            self.assertEqual(bundle_manifest["bridge_version"], "0.4.0-beta")
+            self.assertEqual(bundle_manifest["protocol_version"], 2)
+            self.assertEqual(bundle_manifest["product_scope"], "zotero-pi-only")
             self.assertEqual(bundle_manifest["distribution"], "xpi-bundled")
             self.assertEqual(manifest["applications"]["zotero"]["strict_max_version"], "9.0.*")
 
         updates = json.loads((ROOT / "updates.json").read_text(encoding="utf-8"))
         update = updates["addons"]["zotero-agent-bridge@local"]["updates"][0]
-        self.assertEqual(update["version"], manifest["version"])
+        self.assertEqual(update["version"], "0.3.5")
+        self.assertNotEqual(update["version"], manifest["version"], "0.4.0-beta is an unpublished release candidate")
         self.assertEqual(
             update["update_link"],
             "https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v0.3.5-beta/zotero-agent-bridge-addon-0.3.5.xpi",
         )
         self.assertEqual(
             update["update_hash"],
-            "sha512:" + hashlib.sha512(XPI.read_bytes()).hexdigest(),
+            "sha512:37f819a3b683d649147853c97946d34a2bcd66fe6640214989928f4184dbc16d8b71c485581c2d60a2b6a59eb5e75327951805386f9b3e6e31c7db369d69699f",
         )
 
     def test_bundle_manager_quarantines_invalid_install_and_reinstalls_in_node(self) -> None:

@@ -95,8 +95,3 @@ The package metadata below is informational; authoritative license texts remain 
 
 - License: See upstream package metadata
 - Package: pkg:pypi/uvicorn@0.52.4
-
-## zotero-agent-bridge 0.3.0
-
-- License: See upstream package metadata
-- Package: pkg:pypi/zotero-agent-bridge@0.3.0

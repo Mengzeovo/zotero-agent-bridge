@@ -12,4 +12,4 @@ obsidian_bridge_plugin/runtime/
 dist/obsidian-zotero-agent-bridge/
 dist/bridge/
 dist/zotero-agent-bridge-addon-*.xpi
-zotero_agent_bridge.egg-info/
+*.egg-info/

@@ -15,8 +15,8 @@ from zotero_agent_bridge.version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSI
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE_ROOT = ROOT / "dist" / "bridge" / "windows-x64" / "0.3.5"
-XPI = ROOT / "dist" / "zotero-agent-bridge-addon-0.3.5.xpi"
+BUNDLE_ROOT = ROOT / "dist" / "bridge" / "windows-x64" / "0.4.0-beta"
+XPI = ROOT / "dist" / "zotero-agent-bridge-addon-0.4.0-beta.xpi"
 TEST_RUNTIME = ROOT / "tmp" / "test-runtime"
 
 
@@ -58,8 +58,9 @@ class BundlePackagingTest(unittest.TestCase):
     def test_bundle_manifest_covers_exact_file_set_and_hashes(self) -> None:
         manifest = json.loads((BUNDLE_ROOT / "bridge-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["bundle_schema_version"], 1)
-        self.assertEqual(manifest["bridge_version"], "0.3.5")
-        self.assertEqual(manifest["protocol_version"], 1)
+        self.assertEqual(manifest["bridge_version"], "0.4.0-beta")
+        self.assertEqual(manifest["protocol_version"], 2)
+        self.assertEqual(manifest["product_scope"], "zotero-pi-only")
         self.assertEqual(manifest["distribution"], "xpi-bundled")
         records = {record["path"]: record for record in manifest["files"]}
         actual = {
@@ -80,7 +81,12 @@ class BundlePackagingTest(unittest.TestCase):
             self.assertIn("bridge/windows-x64/zab-bridge/zab-bridge.exe", names)
             self.assertIn("bridge/windows-x64/SBOM.cdx.json", names)
             self.assertIn("bridge/windows-x64/THIRD_PARTY_NOTICES.md", names)
+            self.assertFalse(any("obsidian" in name.lower() for name in names))
+            self.assertNotIn("chrome/content/scripts/zotero_agent_bridge.js", names)
             manifest = json.loads(archive.read("bridge/windows-x64/bridge-manifest.json"))
+            sbom = json.loads(archive.read("bridge/windows-x64/SBOM.cdx.json"))
+            self.assertEqual(sbom["metadata"]["component"]["name"], "zotero-pi-assistant")
+            self.assertEqual(sbom["metadata"]["component"]["version"], "0.4.0-beta")
             for record in manifest["files"]:
                 payload = archive.read(f"bridge/windows-x64/{record['path']}")
                 self.assertEqual(len(payload), record["size"])
@@ -88,8 +94,8 @@ class BundlePackagingTest(unittest.TestCase):
         script = r"""
 const manager = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
 const manifest = JSON.parse(process.argv[1]);
-const accepted = manager.validateBundledManifest(manifest, '0.3.5');
-if (accepted.protocol_version !== 1 || accepted.bridge_version !== '0.3.5') process.exitCode = 1;
+const accepted = manager.validateBundledManifest(manifest, '0.4.0-beta');
+if (accepted.protocol_version !== 2 || accepted.bridge_version !== '0.4.0-beta' || accepted.product_scope !== 'zotero-pi-only') process.exitCode = 1;
 """
         result = subprocess.run(
             ["node", "-e", script, json.dumps(manifest)],
