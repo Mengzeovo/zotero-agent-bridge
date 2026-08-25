@@ -29,15 +29,6 @@ def _load_config_file() -> dict[str, Any]:
 
 
 @dataclass(slots=True)
-class ObsidianSettings:
-    vault_name: str | None = None
-    vault_path: Path | None = None
-    default_note_dir: str = "Zotero Notes"
-    index_path: Path | None = None
-    bridge_open_base_url: str | None = None
-
-
-@dataclass(slots=True)
 class PiSettings:
     executable: str = "pi"
     session_dir: Path | None = None
@@ -69,13 +60,10 @@ class Settings:
     api_token: str
     zotero_local_api_base: str
     bridge_home: Path
-    metadata_dir: Path
-    notes_dir: Path
     addon_timeout_seconds: float
     addon_status_ttl_seconds: float
     user_agent: str
     base_attachment_path: Path | None = None
-    obsidian: ObsidianSettings | None = None
     pi: PiSettings | None = None
     lifecycle_owner_id: str | None = None
     lifecycle_owner_token: str | None = None
@@ -85,7 +73,6 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         config = _load_config_file()
-        obsidian_config = config.get("obsidian") or {}
         pi_config = config.get("pi") or {}
         data_dir = Path(
             os.environ.get("ZOTERO_DATA_DIR")
@@ -97,27 +84,9 @@ class Settings:
             or config.get("bridge_home")
             or data_dir / "zotero-agent-bridge"
         )
-        metadata_dir = Path(
-            os.environ.get("ZOTERO_AGENT_BRIDGE_METADATA_DIR")
-            or config.get("metadata_dir")
-            or (Path.cwd() / "metadata" / "zotero_bridge")
-        )
-        notes_dir = Path(
-            os.environ.get("ZOTERO_AGENT_BRIDGE_NOTES_DIR")
-            or config.get("notes_dir")
-            or (Path.cwd() / "notes" / "zotero_bridge")
-        )
         base_attachment = (
             os.environ.get("ZOTERO_AGENT_BRIDGE_BASE_ATTACHMENT_PATH")
             or config.get("base_attachment_path")
-        )
-        obsidian_vault_path = (
-            os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_VAULT_PATH")
-            or obsidian_config.get("vault_path")
-        )
-        obsidian_index_path = (
-            os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_INDEX_PATH")
-            or obsidian_config.get("index_path")
         )
         pi_session_dir = (
             os.environ.get("ZOTERO_AGENT_BRIDGE_PI_SESSION_DIR")
@@ -137,8 +106,6 @@ class Settings:
                 or "http://127.0.0.1:23119/api/users/0"
             ),
             bridge_home=bridge_home,
-            metadata_dir=metadata_dir,
-            notes_dir=notes_dir,
             addon_timeout_seconds=float(
                 os.environ.get("ZOTERO_AGENT_BRIDGE_ADDON_TIMEOUT")
                 or config.get("addon_timeout_seconds")
@@ -151,23 +118,6 @@ class Settings:
             ),
             user_agent=config.get("user_agent") or "ZoteroAgentBridge/0.1",
             base_attachment_path=Path(base_attachment) if base_attachment else None,
-            obsidian=ObsidianSettings(
-                vault_name=(
-                    os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_VAULT_NAME")
-                    or obsidian_config.get("vault_name")
-                ),
-                vault_path=Path(obsidian_vault_path) if obsidian_vault_path else None,
-                default_note_dir=(
-                    os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_DEFAULT_NOTE_DIR")
-                    or obsidian_config.get("default_note_dir")
-                    or "Zotero Notes"
-                ),
-                index_path=Path(obsidian_index_path) if obsidian_index_path else None,
-                bridge_open_base_url=(
-                    os.environ.get("ZOTERO_AGENT_BRIDGE_OBSIDIAN_BRIDGE_OPEN_BASE_URL")
-                    or obsidian_config.get("bridge_open_base_url")
-                ),
-            ),
             pi=PiSettings(
                 executable=(
                     os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXECUTABLE")
@@ -267,8 +217,6 @@ class Settings:
             raise ValueError("lifecycle_watchdog_interval_seconds must be positive")
         if bool(self.lifecycle_owner_id) != bool(self.lifecycle_owner_token):
             raise ValueError("lifecycle owner id and token must be configured together")
-        if self.obsidian and self.obsidian.index_path is None:
-            self.obsidian.index_path = self.metadata_dir / "obsidian-index.json"
         if self.pi:
             if self.pi.session_dir is None:
                 self.pi.session_dir = self.bridge_home / "pi-sessions"
@@ -282,13 +230,9 @@ class Settings:
             self.archive_dir,
             self.logs_dir,
             self.status_dir,
-            self.metadata_dir,
-            self.notes_dir,
             *([self.pi.session_dir] if self.pi and self.pi.session_dir else []),
         ]:
             ensure_dir(directory)
-        if self.obsidian and self.obsidian.index_path:
-            ensure_dir(self.obsidian.index_path.parent)
         if not self.api_token:
             persisted = read_json(self.generated_config_path, default={})
             token = persisted.get("api_token")

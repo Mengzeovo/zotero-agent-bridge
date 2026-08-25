@@ -1,8 +1,8 @@
 "use strict";
 
 var ZoteroAgentBridgeConfigManager = (() => {
-  const MANAGED_SCHEMA_VERSION = 1;
-  const MIGRATION_SCHEMA_VERSION = 1;
+  const MANAGED_SCHEMA_VERSION = 2;
+  const MIGRATION_SCHEMA_VERSION = 2;
   const MANAGED_CONFIG_FILE = "bridge-config.managed.json";
   const MIGRATION_STATE_FILE = "migration-state.json";
   const LEGACY_LAUNCHER_FILE = "bridge-launcher.json";
@@ -71,15 +71,12 @@ var ZoteroAgentBridgeConfigManager = (() => {
     const { bridgeHome, zoteroDataDir, legacyBaseDir, PathUtils, defaults = {} } = context;
     const config = {
       managed_config_schema_version: MANAGED_SCHEMA_VERSION,
+      product_scope: "zotero-pi-only",
       host: loopbackHost(legacy?.host || defaults.bridgeHost),
       port: positivePort(legacy?.port || defaults.bridgePort),
       zotero_data_dir: zoteroDataDir,
       zotero_local_api_base: String(legacy?.zotero_local_api_base || defaults.zoteroLocalApiBase || "http://127.0.0.1:23119/api/users/0"),
       bridge_home: bridgeHome,
-      metadata_dir: resolveOptionalPath(legacy?.metadata_dir, legacyBaseDir, PathUtils)
-        || PathUtils.join(bridgeHome, "mirror", "metadata"),
-      notes_dir: resolveOptionalPath(legacy?.notes_dir, legacyBaseDir, PathUtils)
-        || PathUtils.join(bridgeHome, "mirror", "notes"),
       addon_timeout_seconds: Number(legacy?.addon_timeout_seconds) > 0 ? Number(legacy.addon_timeout_seconds) : 30,
       addon_status_ttl_seconds: Number(legacy?.addon_status_ttl_seconds) > 0 ? Number(legacy.addon_status_ttl_seconds) : 15,
       lifecycle_addon_exit_grace_seconds: Number(legacy?.lifecycle_addon_exit_grace_seconds) > 0
@@ -88,7 +85,7 @@ var ZoteroAgentBridgeConfigManager = (() => {
       lifecycle_watchdog_interval_seconds: Number(legacy?.lifecycle_watchdog_interval_seconds) > 0
         ? Number(legacy.lifecycle_watchdog_interval_seconds)
         : 1,
-      user_agent: String(legacy?.user_agent || "ZoteroAgentBridge/0.3.5"),
+      user_agent: String(legacy?.user_agent || "ZoteroPiAssistant/0.4.0-beta"),
     };
     const baseAttachment = resolveOptionalPath(legacy?.base_attachment_path, legacyBaseDir, PathUtils);
     if (baseAttachment) {
@@ -118,21 +115,6 @@ var ZoteroAgentBridgeConfigManager = (() => {
       config.pi.system_prompt_path = customPrompt;
     }
 
-    if (legacy?.obsidian && typeof legacy.obsidian === "object") {
-      const obsidian = {};
-      for (const key of ["vault_name", "default_note_dir", "bridge_open_base_url"]) {
-        if (legacy.obsidian[key]) {
-          obsidian[key] = String(legacy.obsidian[key]);
-        }
-      }
-      for (const key of ["vault_path", "index_path"]) {
-        const path = resolveOptionalPath(legacy.obsidian[key], legacyBaseDir, PathUtils);
-        if (path) {
-          obsidian[key] = path;
-        }
-      }
-      config.obsidian = obsidian;
-    }
     return config;
   }
 
@@ -156,10 +138,32 @@ var ZoteroAgentBridgeConfigManager = (() => {
       await IOUtils.makeDirectory(bridgeHome, { ignoreExisting: true });
       if (await IOUtils.exists(managedConfigPath)) {
         const existing = await readJson(managedConfigPath);
-        if (existing.managed_config_schema_version !== MANAGED_SCHEMA_VERSION) {
+        if (existing.managed_config_schema_version === MANAGED_SCHEMA_VERSION) {
+          return { configPath: managedConfigPath, config: existing, migrated: false, source: "managed" };
+        }
+        if (existing.managed_config_schema_version !== 1) {
           throw new ConfigError("managed_config_schema_unsupported", "Managed Bridge configuration schema is unsupported");
         }
-        return { configPath: managedConfigPath, config: existing, migrated: false, source: "managed" };
+        const migrated = migrateConfig(existing, {
+          bridgeHome,
+          zoteroDataDir,
+          legacyBaseDir: bridgeHome,
+          PathUtils,
+          defaults: addonConfig,
+        });
+        await writeAtomic(managedConfigPath, migrated);
+        await writeAtomic(migrationStatePath, {
+          migration_schema_version: MIGRATION_SCHEMA_VERSION,
+          migrated_at: new Date().toISOString(),
+          source: "managed-v1",
+          legacy_config_path: managedConfigPath,
+          managed_config_path: managedConfigPath,
+        });
+        await appendLog("info", "bridge_config_migrated", {
+          source: "managed-v1",
+          managed_config_path: managedConfigPath,
+        });
+        return { configPath: managedConfigPath, config: migrated, migrated: true, source: "managed-v1" };
       }
 
       let legacy = {};
