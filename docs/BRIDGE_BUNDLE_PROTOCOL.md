@@ -32,7 +32,7 @@ bridge/windows-x64/
 ```json
 {
   "bundle_schema_version": 1,
-  "bridge_version": "0.4.0-beta",
+  "bridge_version": "0.4.1-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
@@ -106,7 +106,7 @@ bridge/windows-x64/
 ```json
 {
   "sentinel_schema_version": 1,
-  "bridge_version": "0.4.0-beta",
+  "bridge_version": "0.4.1-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "manifest_sha256": "<sha256 of canonical manifest bytes>",
@@ -122,10 +122,10 @@ bridge/windows-x64/
 ```json
 {
   "state_schema_version": 1,
-  "current_version": "0.4.0-beta",
+  "current_version": "0.4.1-beta",
   "current_protocol_version": 2,
   "current_product_scope": "zotero-pi-only",
-  "last_known_good": "0.4.0-beta",
+  "last_known_good": "0.4.1-beta",
   "last_known_good_protocol_version": 2,
   "last_known_good_product_scope": "zotero-pi-only",
   "pending_version": null,
@@ -133,12 +133,6 @@ bridge/windows-x64/
   "pending_product_scope": null,
   "protocol_floor": 2,
   "pi_only_established_at": "<UTC ISO-8601>",
-  "legacy_baseline_confirmed_at": "<UTC ISO-8601 or null>",
-  "legacy_fallback_consumed": true,
-  "legacy_fallback_attempted_at": "<UTC ISO-8601 or null>",
-  "legacy_fallback_completed_at": "<UTC ISO-8601 or null>",
-  "legacy_fallback_version": "0.3.5",
-  "legacy_fallback_from": "0.4.0-beta",
   "updated_at": "<UTC ISO-8601>"
 }
 ```
@@ -146,13 +140,9 @@ bridge/windows-x64/
 - `current_*`：当前选择的版本、协议和产品范围。
 - `pending_*`：已安装但尚未通过 `/lifecycle` 验证的版本、协议和产品范围。
 - `last_known_good_*`：至少成功启动并通过生命周期验证一次的兼容 runtime。
-- `protocol_floor`：成功建立 Pi-only v2 后写为 `2`；低于该值的 bundle 不得回滚。
-- `pi_only_established_at`：首次成功启动 Pi-only v2 的时间。
-- `legacy_baseline_confirmed_at`：精确的 bundled `0.3.5` protocol v1 基线曾正常启动的时间；普通基线启动不会消费未来的紧急回退机会。
-- `legacy_fallback_consumed`：首次 v2 升级是否已选择过一次性 v1 紧急回退。
-- `legacy_fallback_attempted_at/version/from`：在启动 rollback 进程前原子写入，确保回退即使启动失败也不能再次选择。
-- `legacy_fallback_completed_at`：已预留的紧急回退成功达到 ready 状态的时间；失败时保持为空，但 `legacy_fallback_consumed` 仍为 true。
-- 旧 schema 1 状态文件缺少这些新增字段时按 `protocol_floor=0`、`legacy_fallback_consumed=false` 迁移，不改写用户会话或 Token。
+- `protocol_floor`：`0.4.1-beta` 读取任何旧状态时都会规范化为 `2`；低于该值的 bundle 不得回滚。
+- `pi_only_established_at`：首次成功启动 Pi-only v2 的时间；旧状态中已有值时保留。
+- 旧 schema 1 状态文件会安全投影到 protocol floor 2，不改写用户会话或 Token。过渡版本留下的 legacy fallback 诊断字段仅作为未知历史字段保留，不参与任何选择或启动逻辑。
 - 状态文件使用临时文件加原子替换写入。
 
 ## 生命周期兼容
@@ -166,7 +156,7 @@ Bridge `/lifecycle` 必须返回：
   "pid": 1234,
   "started_at": "...",
   "exit_with_addon": true,
-  "bridge_version": "0.4.0-beta",
+  "bridge_version": "0.4.1-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled"
@@ -180,7 +170,7 @@ Bridge `/lifecycle` 必须返回：
 - `bridge_version` 是非空合法版本
 - bundled 启动时 `distribution == "xpi-bundled"`，且版本/协议与已校验 manifest 一致
 
-升级过渡期允许识别 protocol v1 或缺少 lifecycle protocol 的旧实例，但只能将其标记为 `legacy/transitional`，不能视为已建立 Pi-only 协议基线。未知协议不得被静默复用。
+`0.4.1-beta` 不再接受 protocol v1 或缺少 lifecycle protocol 的实例。未知或低于 v2 的协议不得被复用或作为回滚目标。
 
 ## 运行时定位文件
 
@@ -189,7 +179,7 @@ Bridge Home 中写入 `bridge-runtime.json`：
 ```json
 {
   "runtime_schema_version": 1,
-  "bridge_version": "0.4.0-beta",
+  "bridge_version": "0.4.1-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
@@ -206,9 +196,8 @@ Bridge Home 中写入 `bridge-runtime.json`：
 
 - 新版本安装后先写入 `pending_version`、`pending_protocol_version` 和 `pending_product_scope`。
 - 只有 `/lifecycle` 返回相同版本、协议和 product scope 后，才能更新 `last_known_good_*`。
-- 第一次从 v1 升级到 v2 时，如果 v2 启动失败且尚未建立 protocol floor，只能回退一次到精确版本 `0.3.5`、具有有效旧 manifest、哨兵和文件哈希的 v1 `last_known_good`。
-- 一次性 v1 回退成功后必须写入 `legacy_fallback_consumed=true`，不能在后续失败中反复选择旧 broad Bridge。
-- Pi-only v2 成功后写入 `protocol_floor=2` 和 `pi_only_established_at`；此后所有 protocol v1 rollback candidate 都必须被拒绝。
+- 读取安装状态时先建立 `protocol_floor=2`；所有 protocol v1 rollback candidate 均被拒绝，且旧 v1 manifest 不再由安装器解析。
+- Pi-only v2 成功后更新 `protocol_floor=2` 和 `pi_only_established_at`。
 - v2 到 v2 的回滚仍可使用，但候选必须具有有效 manifest、`product_scope=zotero-pi-only`、哨兵和文件哈希。
 - 回退必须在 UI、状态和日志中明确显示，不能静默长期运行旧版本。
 

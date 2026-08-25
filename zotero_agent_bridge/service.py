@@ -1036,33 +1036,8 @@ class BridgeService:
             self._clear_assistant_context()
 
 
-
-
-
-
 def build_service(settings: Settings | None = None) -> BridgeService:
     return BridgeService(settings or Settings.from_env())
-
-
-_RETIRED_HTTP_ROUTES = (
-    ("GET", "/capabilities"),
-    ("GET", "/collections"),
-    ("GET", "/collections/{collection_key}"),
-    ("POST", "/collections"),
-    ("PATCH", "/collections/{collection_key}"),
-    ("GET", "/items/search"),
-    ("GET", "/items/{item_key}"),
-    ("POST", "/items"),
-    ("PATCH", "/items/{item_key}"),
-    ("POST", "/items/{item_key}/attachments/linked-pdf"),
-    ("POST", "/items/{item_key}/notes"),
-    ("POST", "/sync/export"),
-    ("POST", "/obsidian/notes/prepare-sync"),
-    ("POST", "/obsidian/notes/{note_key}/sync-status"),
-    ("POST", "/obsidian/reindex"),
-    ("GET", "/obsidian/open/{stable_id}"),
-    ("POST", "/assistant/session/close"),
-)
 
 
 def create_app(
@@ -1084,7 +1059,14 @@ def create_app(
             lifecycle.stop_watchdog()
             service.shutdown()
 
-    app = FastAPI(title="Zotero Pi Assistant Private Bridge", version=BRIDGE_VERSION, lifespan=lifespan)
+    app = FastAPI(
+        title="Zotero Pi Assistant Private Bridge",
+        version=BRIDGE_VERSION,
+        lifespan=lifespan,
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
+    )
     app.state.bridge_lifecycle = lifecycle
 
     def authorize(
@@ -1120,23 +1102,6 @@ def create_app(
     ) -> dict[str, Any]:
         lifecycle.request_shutdown(x_bridge_owner_token)
         return {"status": "shutting_down", "owner_id": lifecycle.owner_id}
-
-    def retired_feature() -> None:
-        raise BridgeError(
-            410,
-            "feature_retired",
-            "This integration surface is no longer supported by Zotero Pi Assistant.",
-            {"product_scope": "zotero-pi-only", "transition_release": "0.4.0-beta"},
-        )
-
-    for retired_method, retired_path in _RETIRED_HTTP_ROUTES:
-        app.add_api_route(
-            retired_path,
-            retired_feature,
-            methods=[retired_method],
-            dependencies=[Depends(authorize)],
-            include_in_schema=False,
-        )
 
     @app.post(
         "/assistant/session/open",

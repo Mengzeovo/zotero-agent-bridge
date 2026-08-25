@@ -4,7 +4,7 @@
   <Description about="urn:mozilla:install-manifest">
     <em:id>zotero-agent-bridge@local</em:id>
     <em:name>Zotero Pi Assistant</em:name>
-    <em:version>0.4.0-beta</em:version>
+    <em:version>0.4.1-beta</em:version>
     <em:type>2</em:type>
     <em:bootstrap>true</em:bootstrap>
     <em:description>Built-in Pi literature assistant for Zotero with managed private Bridge.</em:description>

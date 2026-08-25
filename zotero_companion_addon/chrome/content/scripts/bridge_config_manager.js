@@ -85,7 +85,7 @@ var ZoteroAgentBridgeConfigManager = (() => {
       lifecycle_watchdog_interval_seconds: Number(legacy?.lifecycle_watchdog_interval_seconds) > 0
         ? Number(legacy.lifecycle_watchdog_interval_seconds)
         : 1,
-      user_agent: String(legacy?.user_agent || "ZoteroPiAssistant/0.4.0-beta"),
+      user_agent: String(legacy?.user_agent || "ZoteroPiAssistant/0.4.1-beta"),
     };
     const baseAttachment = resolveOptionalPath(legacy?.base_attachment_path, legacyBaseDir, PathUtils);
     if (baseAttachment) {

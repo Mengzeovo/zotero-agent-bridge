@@ -113,6 +113,14 @@ class PiOnlyContractTest(unittest.TestCase):
     def test_current_application_surface_is_exactly_the_retained_surface(self) -> None:
         self.assertEqual(set(self.routes), self.retained)
 
+    def test_openapi_swagger_and_redoc_are_disabled(self) -> None:
+        settings = SimpleNamespace(api_token="pi-contract-token")
+        service = SimpleNamespace(settings=settings)
+        client = TestClient(create_app(settings=settings, service=service, lifecycle=SimpleNamespace()))
+        for path in ("/openapi.json", "/docs", "/redoc"):
+            with self.subTest(path=path):
+                self.assertEqual(client.get(path).status_code, 404)
+
     def test_every_retained_route_requires_bridge_authentication(self) -> None:
         for route_pair in sorted(self.retained):
             with self.subTest(route=route_pair):
