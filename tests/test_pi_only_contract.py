@@ -156,6 +156,19 @@ class PiOnlyContractTest(unittest.TestCase):
                 self.assertIsNotNone(model)
                 self.assertEqual(model.__name__, model_name)
 
+    def test_retired_python_implementation_modules_are_absent(self) -> None:
+        retired_implementations = {
+            "collection_tree.py",
+            "doi.py",
+            "mirror.py",
+            "obsidian.py",
+            "paper_classifier.py",
+            "pdf_tools.py",
+        }
+        package_root = ROOT / "zotero_agent_bridge"
+        self.assertTrue(all(not (package_root / name).exists() for name in retired_implementations))
+        self.assertTrue((package_root / "mcp_server.py").exists(), "CLI retirement shell is handled in step 15")
+
     def test_python_service_public_surface_is_pi_only(self) -> None:
         public_methods = {
             name
