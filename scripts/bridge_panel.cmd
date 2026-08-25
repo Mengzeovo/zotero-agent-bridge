@@ -1,9 +1,3 @@
 @echo off
-setlocal
-set "SCRIPT_DIR=%~dp0"
-where pythonw >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-  start "" pythonw "%SCRIPT_DIR%bridge_panel.py" %*
-) else (
-  start "" python "%SCRIPT_DIR%bridge_panel.py" %*
-)
+echo Zotero Pi Assistant: feature_retired (bridge_panel.cmd): This integration surface was retired in 0.4.0-beta. Use the built-in Pi literature assistant. 1>&2
+exit /b 2

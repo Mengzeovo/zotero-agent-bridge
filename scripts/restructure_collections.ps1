@@ -1,14 +1,3 @@
-param(
-  [string]$ConfigPath = (Join-Path $PSScriptRoot '..\config\bridge-config.json')
-)
-
-$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$configResolved = (Resolve-Path $ConfigPath).Path
-
-Push-Location $projectRoot
-try {
-  python .\scripts\restructure_collections.py --config $configResolved
-}
-finally {
-  Pop-Location
-}
+$ErrorActionPreference = "Stop"
+[Console]::Error.WriteLine("Zotero Pi Assistant: feature_retired (restructure_collections.ps1): This integration surface was retired in 0.4.0-beta. Use the built-in Pi literature assistant.")
+exit 2
