@@ -527,14 +527,20 @@ function buildZoteroAgentBridge(rootURI) {
         state.bridgeOwnership = "owned";
         state.bridgeOwnerId = ownerId;
         state.bridgeOwnerToken = ownerToken;
+        const emergencyLegacyFallback = Boolean(bundleInfo.emergencyLegacyFallback);
         state.bridgeLastError = rollbackFrom
           ? {
-              code: "bridge_bundle_rollback_active",
+              code: emergencyLegacyFallback ? "bridge_legacy_emergency_fallback" : "bridge_bundle_rollback_active",
               message: `Bridge ${rollbackFrom} failed; running last-known-good ${lifecycle.bridge_version}`,
-              details: { failed_version: rollbackFrom, rollback_version: lifecycle.bridge_version },
+              details: {
+                failed_version: rollbackFrom,
+                rollback_version: lifecycle.bridge_version,
+                rollback_protocol_version: lifecycle.protocol_version,
+                emergency_legacy_fallback: emergencyLegacyFallback,
+              },
             }
           : null;
-        await state.bridgeBundleManager.markLaunchSucceeded(bundleInfo);
+        await state.bridgeBundleManager.markLaunchSucceeded(bundleInfo, { emergencyLegacyFallback });
         await writeRuntimeLocator(lifecycle);
         await appendLog(rollbackFrom ? "warning" : "info", rollbackFrom ? "bridge_rollback_ready" : "bridge_ready", {
           ownership: state.bridgeOwnership,
@@ -544,6 +550,7 @@ function buildZoteroAgentBridge(rootURI) {
           product_scope: lifecycle.product_scope || null,
           distribution: lifecycle.distribution,
           rollback_from: rollbackFrom,
+          emergency_legacy_fallback: emergencyLegacyFallback,
         });
         return health;
       }
@@ -630,7 +637,7 @@ function buildZoteroAgentBridge(rootURI) {
         }
         await state.bridgeBundleManager.recordLaunchFailure(primaryBundle, error);
         await stopFailedBundleProcess();
-        const rollback = await state.bridgeBundleManager.rollbackCandidate(primaryBundle.manifest.bridge_version);
+        const rollback = await state.bridgeBundleManager.rollbackCandidate(primaryBundle);
         if (!rollback) {
           throw error;
         }
@@ -638,9 +645,31 @@ function buildZoteroAgentBridge(rootURI) {
         await appendLog("warning", "bridge_bundle_rollback_attempt", {
           failed_version: primaryBundle.manifest.bridge_version,
           rollback_version: rollback.manifest.bridge_version,
+          rollback_protocol_version: rollback.manifest.protocol_version,
+          emergency_legacy_fallback: Boolean(rollback.emergencyLegacyFallback),
           error: serializeError(error),
         });
-        return await startBundleAndWait(rollback, { rollbackFrom: primaryBundle.manifest.bridge_version });
+        try {
+          return await startBundleAndWait(rollback, { rollbackFrom: primaryBundle.manifest.bridge_version });
+        } catch (rollbackError) {
+          await state.bridgeBundleManager.recordLaunchFailure(rollback, rollbackError);
+          await stopFailedBundleProcess();
+          await appendLog("error", "bridge_bundle_rollback_failed", {
+            failed_version: primaryBundle.manifest.bridge_version,
+            rollback_version: rollback.manifest.bridge_version,
+            rollback_protocol_version: rollback.manifest.protocol_version,
+            emergency_legacy_fallback: Boolean(rollback.emergencyLegacyFallback),
+            error: serializeError(rollbackError),
+          });
+          throw new BridgeError(
+            "bridge_rollback_failed",
+            "The primary Bridge and its rollback candidate both failed to start",
+            {
+              primary: serializeError(error),
+              rollback: serializeError(rollbackError),
+            },
+          );
+        }
       }
     })();
 

@@ -478,6 +478,10 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         self.assertIn("return hashBytes(await IOUtils.read(path));", manager)
         self.assertIn("const previousState = await readInstallState(root);", manager)
         self.assertIn("...previousState", manager)
+        self.assertIn("protocol_floor", manager)
+        self.assertIn("pi_only_established_at", manager)
+        self.assertIn("legacy_fallback_consumed", manager)
+        self.assertIn("rollbackDecision", manager)
         self.assertIn("bridge_bundle_existing_quarantined", manager)
         self.assertIn(".invalid-${Services.uuid.generateUUID()", manager)
         self.assertIn('throw new BundleError(\n              "bundle_existing_invalid"', manager)
@@ -485,6 +489,10 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         self.assertIn('typeof error.code === "string"', bootstrap)
         self.assertIn('const bundleInstallError = state.bridgeBundleState === "error"', bootstrap)
         self.assertIn("state.bridgeLastError = bundleInstallError", bootstrap)
+        self.assertIn("rollbackCandidate(primaryBundle)", bootstrap)
+        self.assertIn("markLaunchSucceeded(bundleInfo, { emergencyLegacyFallback })", bootstrap)
+        self.assertIn("recordLaunchFailure(rollback, rollbackError)", bootstrap)
+        self.assertIn('"bridge_bundle_rollback_failed"', bootstrap)
         self.assertLess(
             bootstrap.index('lifecycle.protocol_version === undefined'),
             bootstrap.index('Number.isInteger(Number(lifecycle.pid))'),
@@ -690,7 +698,7 @@ const manifest = {
   distribution: 'xpi-bundled',
   platform: 'windows',
   architecture: 'x64',
-  bridge_version: '0.3.5',
+  bridge_version: '0.4.0-beta',
   entrypoint: 'zab-bridge/zab-bridge.exe',
   sentinel: '.zab-bundle-installed.json',
   files: [
@@ -706,11 +714,50 @@ fs.writeFileSync(path.join(bundleSourceDir, 'bridge-manifest.json'), manifestRaw
 const manifestSha256 = crypto.createHash('sha256').update(manifestRaw, 'utf8').digest('hex');
 
 const installRoot = path.join(localAppData, 'ZoteroAgentBridge', 'bridge');
-const staleRoot = path.join(installRoot, '0.3.5');
+const legacyRoot = path.join(installRoot, '0.3.5');
+const legacyExeBytes = Buffer.from('legacy bridge exe v1');
+fs.mkdirSync(path.join(legacyRoot, 'zab-bridge'), { recursive: true });
+fs.writeFileSync(path.join(legacyRoot, 'zab-bridge', 'zab-bridge.exe'), legacyExeBytes);
+const legacyManifest = {
+  bundle_schema_version: 1,
+  protocol_version: 1,
+  distribution: 'xpi-bundled',
+  platform: 'windows',
+  architecture: 'x64',
+  bridge_version: '0.3.5',
+  entrypoint: 'zab-bridge/zab-bridge.exe',
+  sentinel: '.zab-bundle-installed.json',
+  files: [
+    {
+      path: 'zab-bridge/zab-bridge.exe',
+      size: legacyExeBytes.length,
+      sha256: crypto.createHash('sha256').update(legacyExeBytes).digest('hex'),
+    },
+  ],
+};
+const legacyManifestRaw = JSON.stringify(legacyManifest, null, 2);
+const legacyManifestSha256 = crypto.createHash('sha256').update(legacyManifestRaw, 'utf8').digest('hex');
+fs.writeFileSync(path.join(legacyRoot, '.zab-bundle-manifest.json'), legacyManifestRaw);
+fs.writeFileSync(path.join(legacyRoot, '.zab-bundle-installed.json'), JSON.stringify({
+  sentinel_schema_version: 1,
+  bridge_version: '0.3.5',
+  protocol_version: 1,
+  manifest_sha256: legacyManifestSha256,
+  installed_at: '2026-01-01T00:00:00.000Z',
+  entrypoint: 'zab-bridge/zab-bridge.exe',
+}));
+fs.writeFileSync(path.join(installRoot, 'install-state.json'), JSON.stringify({
+  state_schema_version: 1,
+  current_version: '0.3.5',
+  last_known_good: '0.3.5',
+  pending_version: null,
+  updated_at: '2026-01-01T00:00:00.000Z',
+}));
+const staleRoot = path.join(installRoot, '0.4.0-beta');
 fs.mkdirSync(staleRoot, { recursive: true });
 fs.writeFileSync(path.join(staleRoot, '.zab-bundle-installed.json'), JSON.stringify({
   sentinel_schema_version: 1,
-  bridge_version: '0.3.5',
+  bridge_version: '0.4.0-beta',
   protocol_version: 2,
   product_scope: 'zotero-pi-only',
   manifest_sha256: 'stale-manifest-hash',
@@ -782,7 +829,7 @@ globalThis.Components = Components;
 (async () => {
   const manager = managerFactory.create({
     rootURI: pathToFileURL(addonRoot + '/').href,
-    addonVersion: '0.3.5',
+    addonVersion: '0.4.0-beta',
     Services, IOUtils, PathUtils, Zotero,
     appendLog: (level, message, details) => logs.push({ level, message, details }),
   });
@@ -790,13 +837,35 @@ globalThis.Components = Components;
   assert.strictEqual(installed.reused, false);
   assert.deepStrictEqual(fs.readFileSync(installed.executable), exeBytes);
   assert.strictEqual(fs.existsSync(path.join(staleRoot, 'zab-bridge-placeholder.txt')), false, 'stale contents are quarantined away');
-  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.3.5.invalid-'));
+  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.4.0-beta.invalid-'));
   assert.strictEqual(quarantined.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(installRoot, quarantined[0], 'zab-bridge-placeholder.txt'), 'utf8'), 'old install');
   const sentinel = JSON.parse(fs.readFileSync(path.join(installed.versionRoot, '.zab-bundle-installed.json'), 'utf8'));
   assert.strictEqual(sentinel.protocol_version, 2);
   assert.strictEqual(sentinel.product_scope, 'zotero-pi-only');
   assert.strictEqual(sentinel.manifest_sha256, manifestSha256);
+  const rollback = await manager.rollbackCandidate(installed);
+  assert.strictEqual(rollback.manifest.bridge_version, '0.3.5');
+  assert.strictEqual(rollback.manifest.protocol_version, 1);
+  assert.strictEqual(rollback.emergencyLegacyFallback, true);
+  const reservedState = JSON.parse(fs.readFileSync(path.join(installRoot, 'install-state.json'), 'utf8'));
+  assert.strictEqual(reservedState.legacy_fallback_consumed, true);
+  assert.strictEqual(reservedState.legacy_fallback_version, '0.3.5');
+  assert.strictEqual(reservedState.legacy_fallback_from, '0.4.0-beta');
+  assert.strictEqual(reservedState.legacy_fallback_completed_at, null);
+  assert.strictEqual(await manager.rollbackCandidate(installed), null);
+  await manager.markLaunchSucceeded(rollback, { emergencyLegacyFallback: true });
+  const consumedState = JSON.parse(fs.readFileSync(path.join(installRoot, 'install-state.json'), 'utf8'));
+  assert.strictEqual(consumedState.legacy_fallback_consumed, true);
+  assert.ok(consumedState.legacy_fallback_completed_at);
+  assert.strictEqual(consumedState.protocol_floor, 0);
+  await manager.markLaunchSucceeded(installed);
+  const establishedState = JSON.parse(fs.readFileSync(path.join(installRoot, 'install-state.json'), 'utf8'));
+  assert.strictEqual(establishedState.protocol_floor, 2);
+  assert.strictEqual(establishedState.last_known_good, '0.4.0-beta');
+  assert.strictEqual(establishedState.last_known_good_protocol_version, 2);
+  assert.strictEqual(establishedState.last_known_good_product_scope, 'zotero-pi-only');
+  assert.ok(establishedState.pi_only_established_at);
   assert.ok(logs.some((entry) => entry.message === 'bridge_bundle_existing_quarantined'));
   assert.ok(logs.some((entry) => entry.message === 'bridge_bundle_installed'));
 
