@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "product_name": "Zotero Pi Assistant",
+  "product_scope": "zotero-pi-only",
+  "baseline_version": "0.3.5",
+  "transition_release": "0.4.0-beta",
+  "final_removal_release": "0.4.1-beta",
+  "transition_error": {
+    "http_status": 410,
+    "code": "feature_retired",
+    "message": "This integration surface is no longer supported by Zotero Pi Assistant."
+  },
+  "retained_http_routes": [
+    {"method": "GET", "path": "/health"},
+    {"method": "GET", "path": "/lifecycle"},
+    {"method": "POST", "path": "/lifecycle/shutdown"},
+    {"method": "POST", "path": "/assistant/session/open"},
+    {"method": "POST", "path": "/assistant/session/message"},
+    {"method": "GET", "path": "/assistant/session/events"},
+    {"method": "GET", "path": "/assistant/session/messages"},
+    {"method": "GET", "path": "/assistant/session/history"},
+    {"method": "POST", "path": "/assistant/session/resume"},
+    {"method": "GET", "path": "/assistant/models"},
+    {"method": "POST", "path": "/assistant/session/model"},
+    {"method": "GET", "path": "/assistant/thinking-levels"},
+    {"method": "POST", "path": "/assistant/session/thinking-level"},
+    {"method": "GET", "path": "/assistant/session/status"},
+    {"method": "POST", "path": "/assistant/session/save-note"},
+    {"method": "POST", "path": "/assistant/session/abort"},
+    {"method": "POST", "path": "/assistant/session/reset"}
+  ],
+  "retired_http_routes": [
+    {"method": "GET", "path": "/capabilities"},
+    {"method": "GET", "path": "/collections"},
+    {"method": "GET", "path": "/collections/{collection_key}"},
+    {"method": "POST", "path": "/collections"},
+    {"method": "PATCH", "path": "/collections/{collection_key}"},
+    {"method": "GET", "path": "/items/search"},
+    {"method": "GET", "path": "/items/{item_key}"},
+    {"method": "POST", "path": "/items"},
+    {"method": "PATCH", "path": "/items/{item_key}"},
+    {"method": "POST", "path": "/items/{item_key}/attachments/linked-pdf"},
+    {"method": "POST", "path": "/items/{item_key}/notes"},
+    {"method": "POST", "path": "/sync/export"},
+    {"method": "POST", "path": "/obsidian/notes/prepare-sync"},
+    {"method": "POST", "path": "/obsidian/notes/{note_key}/sync-status"},
+    {"method": "POST", "path": "/obsidian/reindex"},
+    {"method": "GET", "path": "/obsidian/open/{stable_id}"},
+    {"method": "POST", "path": "/assistant/session/close"}
+  ],
+  "retired_console_entry_points": [
+    "zotero-agent-bridge-mcp"
+  ],
+  "retired_scripts": [
+    "scripts/build_obsidian_plugin.ps1",
+    "scripts/run_mcp.py",
+    "scripts/run_mcp.ps1",
+    "scripts/classify_papers.py",
+    "scripts/classify_papers.ps1",
+    "scripts/restructure_collections.py",
+    "scripts/restructure_collections.ps1",
+    "scripts/bridge_panel.py",
+    "scripts/bridge_panel.cmd",
+    "scripts/start_stack.ps1",
+    "scripts/start_stack.cmd",
+    "scripts/register_bridge_launcher.ps1",
+    "scripts/launch_bridge_detached.ps1",
+    "scripts/spawn_bridge_detached.py",
+    "scripts/bridge_process_wrapper.py"
+  ],
+  "retired_python_modules": [
+    "zotero_agent_bridge.mcp_server",
+    "zotero_agent_bridge.obsidian",
+    "zotero_agent_bridge.mirror",
+    "zotero_agent_bridge.doi",
+    "zotero_agent_bridge.pdf_tools",
+    "zotero_agent_bridge.collection_tree",
+    "zotero_agent_bridge.paper_classifier"
+  ],
+  "retired_addon_resources": [
+    "zotero_companion_addon/chrome/content/scripts/zotero_agent_bridge.js",
+    "obsidian_bridge_plugin"
+  ],
+  "stage_1": {
+    "release": "0.4.0-beta",
+    "http_behavior": "Retired routes remain registered, require the normal Bridge token, perform no side effects, and return the transition_error payload.",
+    "command_behavior": "Retired add-on queue commands produce a terminal unsupported-command response and are archived without mutation.",
+    "cli_behavior": "Retired console and script entry points terminate with a clear unsupported-product message and a non-zero exit code.",
+    "rollback_behavior": "A pre-v2 bundled Bridge may be used only as a one-time emergency fallback before the first successful Pi-only v2 startup.",
+    "data_behavior": "No user mirror, Obsidian vault, configuration backup, Token, or Pi session data is deleted."
+  },
+  "stage_2": {
+    "release": "0.4.1-beta",
+    "http_behavior": "Transition routes are unregistered and return 404.",
+    "command_behavior": "Retired queue command implementations and compatibility handlers are deleted.",
+    "cli_behavior": "Retired entry points and scripts are deleted.",
+    "rollback_behavior": "Rollback candidates below the Pi-only lifecycle protocol floor are rejected.",
+    "data_behavior": "Legacy user data remains untouched unless the user explicitly removes it."
+  },
+  "preserved_identifiers_and_paths": [
+    "zotero-agent-bridge@local",
+    "%USERPROFILE%/Zotero/zotero-agent-bridge",
+    "%USERPROFILE%/Zotero/zotero-agent-bridge/bridge.generated.json",
+    "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-chat/session-index.json",
+    "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-sessions"
+  ]
+}
