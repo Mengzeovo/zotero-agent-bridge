@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import unittest
 import uuid
@@ -14,7 +15,7 @@ from zotero_agent_bridge.errors import BridgeError
 from zotero_agent_bridge.lifecycle import BridgeLifecycleController
 from zotero_agent_bridge.mirror import MirrorStore
 from zotero_agent_bridge.reading_context import ReadingContext
-from zotero_agent_bridge.service import BridgeService, create_app
+from zotero_agent_bridge.service import BridgeService, _build_literature_bootstrap_prompt, create_app
 
 
 ITEM_KEY = "ABCD1234"
@@ -172,6 +173,10 @@ class FakePiChatManager:
         self.set_thinking_level_calls: list[str] = []
         self.thinking_levels = ["off", "minimal", "low", "medium", "high"]
         self.thinking_level = "medium"
+        self.history_listing: dict[str, Any] = {"document_id": DOCUMENT_ID, "sessions": []}
+        self.history_calls: list[tuple[str, Path, str | int | None]] = []
+        self.resume_calls: list[tuple[str, Path, str | int | None, str]] = []
+        self.resume_error: BridgeError | None = None
 
     def status(self) -> dict[str, Any]:
         return {
@@ -318,6 +323,37 @@ class FakePiChatManager:
         self.context_fingerprint = None
         self.events.clear()
         return {"reset": True, "document_id": DOCUMENT_ID, "previous_session_file": "old.jsonl"}
+
+    def list_session_history(
+        self,
+        item_key: str,
+        pdf_path: str | Path,
+        *,
+        library_id: str | int | None = None,
+    ) -> dict[str, Any]:
+        self.history_calls.append((item_key, Path(pdf_path).resolve(), library_id))
+        return {
+            "document_id": str(self.history_listing.get("document_id") or DOCUMENT_ID),
+            "sessions": [dict(entry) for entry in self.history_listing.get("sessions", [])],
+        }
+
+    def resume_session(
+        self,
+        item_key: str,
+        pdf_path: str | Path,
+        *,
+        library_id: str | int | None = None,
+        session_id: str,
+    ) -> dict[str, Any]:
+        self.resume_calls.append((item_key, Path(pdf_path).resolve(), library_id, session_id))
+        if self.resume_error:
+            raise self.resume_error
+        if self.streaming:
+            raise BridgeError(409, "pi_session_busy", "still streaming")
+        self.running = False
+        self.context_fingerprint = None
+        self.events.clear()
+        return {"resumed": True, "document_id": DOCUMENT_ID, "session_file": "restored.jsonl"}
 
     def close(self) -> None:
         self.close_calls += 1
@@ -754,6 +790,56 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertNotIn("SECRET FULL CONTEXT", markdown)
         self.assertNotIn("You are a literature assistant", markdown)
 
+    def test_save_note_preserves_math_operators_while_escaping_prose_html(self) -> None:
+        self.assertEqual(self._open().status_code, 200)
+        question = "Is $Y>\\theta$ the error event?"
+        answer = (
+            "如果噪声使 $Y>\\theta$，接收机就会误判成 1，所以\n"
+            "\n"
+            "$$\n"
+            "\\begin{aligned}\n"
+            "P(\\hat X=1\\mid X=0)&=P(Y>\\theta\\mid X=0)\\\\\n"
+            "&=Q\\left(\\frac{\\theta}{\\sigma_0}\\right),\\quad x<y\n"
+            "\\end{aligned}\n"
+            "$$\n"
+            "\n"
+            "这是 <b>0</b> 电平的尾部概率，对照 `x<y` 代码段。\n"
+            "\n"
+            "```text\n"
+            "raw <html> stays\n"
+            "```"
+        )
+        self.pi_chat.messages = [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer, "stopReason": "stop"},
+        ]
+
+        response = self.client.post(
+            "/assistant/session/save-note",
+            headers=self.headers,
+            json=self._save_payload(answer, question),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        _, note_payload = self.writer.calls[0]
+        markdown = str(note_payload["markdown"])
+        note_html = str(note_payload["note_html"])
+        self.assertIn("$Y>\\theta$", markdown)
+        self.assertIn("P(Y>\\theta\\mid X=0)", markdown)
+        self.assertIn("&lt;b&gt;0&lt;/b&gt;", markdown)
+        self.assertIn("Is $Y>\\theta$ the error event?", markdown)
+        self.assertNotIn("$Y&gt;\\theta$", markdown)
+
+        self.assertIn('<span class="math">$Y&gt;\\theta$</span>', note_html)
+        self.assertIn('<pre class="math">', note_html)
+        self.assertIn("P(Y&gt;\\theta\\mid X=0)", note_html)
+        self.assertIn("&amp;=P", note_html)
+        self.assertIn("x&lt;y", note_html)
+        self.assertIn("&lt;b&gt;0&lt;/b&gt;", note_html)
+        self.assertIn("raw &lt;html&gt; stays", note_html)
+        self.assertNotIn("&amp;gt;", note_html)
+        self.assertNotIn("&amp;lt;", note_html)
+
     def test_save_note_normalizes_math_and_builds_zotero_formula_fallback(self) -> None:
         self.assertEqual(self._open().status_code, 200)
         question = "Which equations matter?"
@@ -972,6 +1058,133 @@ Keep code `\(literal\)` unchanged.
         self.pi_chat.streaming = True
         busy = self.client.post("/assistant/session/reset", headers=self.headers)
         self.assertEqual(busy.status_code, 409)
+
+    def _write_session_jsonl(self, name: str, entries: list[dict[str, Any]]) -> Path:
+        path = self.root / "pi-sessions" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(json.dumps(entry) for entry in entries) + "\n", encoding="utf-8")
+        return path
+
+    def test_session_history_requires_context_and_projects_previews(self) -> None:
+        unopened = self.client.get("/assistant/session/history", headers=self.headers)
+        self.assertEqual(unopened.status_code, 409)
+
+        bootstrap = _build_literature_bootstrap_prompt("SECRET FULL CONTEXT", "What does the fog model assume?")
+        archived_file = self._write_session_jsonl(
+            "archived.jsonl",
+            [
+                {"type": "session", "version": 3, "id": "s1", "timestamp": "2026-08-01T10:00:00Z", "cwd": str(self.root)},
+                {
+                    "type": "message",
+                    "id": "m1",
+                    "parentId": None,
+                    "timestamp": "2026-08-01T10:00:01Z",
+                    "message": {"role": "user", "content": [{"type": "text", "text": bootstrap}]},
+                },
+                {
+                    "type": "message",
+                    "id": "m2",
+                    "parentId": "m1",
+                    "timestamp": "2026-08-01T10:00:02Z",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "It assumes ..."}]},
+                },
+            ],
+        )
+        current_file = self._write_session_jsonl(
+            "current.jsonl",
+            [
+                {"type": "session", "version": 3, "id": "s2", "timestamp": "2026-08-02T09:00:00Z", "cwd": str(self.root)},
+                {
+                    "type": "message",
+                    "id": "n1",
+                    "parentId": None,
+                    "timestamp": "2026-08-02T09:00:01Z",
+                    "message": {"role": "user", "content": "plain follow up"},
+                },
+            ],
+        )
+        self.pi_chat.history_listing = {
+            "document_id": DOCUMENT_ID,
+            "sessions": [
+                {
+                    "session_id": "c" * 16,
+                    "session_file": str(current_file),
+                    "current": True,
+                    "available": True,
+                    "updated_at": "2026-08-02T09:00:00+00:00",
+                    "archived_at": None,
+                },
+                {
+                    "session_id": "a" * 16,
+                    "session_file": str(archived_file),
+                    "current": False,
+                    "available": True,
+                    "updated_at": "2026-08-01T10:00:00+00:00",
+                    "archived_at": "2026-08-02T08:00:00+00:00",
+                },
+            ],
+        }
+
+        self.assertEqual(self._open().status_code, 200)
+        response = self.client.get("/assistant/session/history", headers=self.headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["document_id"], DOCUMENT_ID)
+        self.assertEqual(len(payload["sessions"]), 2)
+        current, archived = payload["sessions"]
+        self.assertTrue(current["current"])
+        self.assertEqual(current["preview"], "plain follow up")
+        self.assertEqual(current["user_messages"], 1)
+        self.assertEqual(current["assistant_messages"], 0)
+        self.assertFalse(archived["current"])
+        self.assertEqual(archived["preview"], "What does the fog model assume?")
+        self.assertEqual(archived["user_messages"], 1)
+        self.assertEqual(archived["assistant_messages"], 1)
+        self.assertEqual(archived["archived_at"], "2026-08-02T08:00:00+00:00")
+        self.assertNotIn("SECRET FULL CONTEXT", response.text)
+        self.assertNotIn("session_file", response.text)
+        self.assertEqual(self.pi_chat.history_calls, [(ITEM_KEY, self.pdf_path.resolve(), 7)])
+
+    def test_resume_session_switches_back_and_reopens(self) -> None:
+        self.assertEqual(self._open().status_code, 200)
+        response = self.client.post(
+            "/assistant/session/resume",
+            headers=self.headers,
+            json={"session_id": "a" * 16},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.pi_chat.resume_calls, [(ITEM_KEY, self.pdf_path.resolve(), 7, "a" * 16)])
+        self.assertEqual(len(self.pi_chat.open_calls), 2)
+        payload = response.json()
+        self.assertTrue(payload["session"]["running"])
+        self.assertTrue(payload["context_injection_required"])
+        self.assertFalse(payload["context_updated"])
+        self.assertEqual(payload["context"]["item_key"], ITEM_KEY)
+
+    def test_resume_session_requires_context_and_valid_handle(self) -> None:
+        unopened = self.client.post(
+            "/assistant/session/resume",
+            headers=self.headers,
+            json={"session_id": "a" * 16},
+        )
+        self.assertEqual(unopened.status_code, 409)
+
+        self.assertEqual(self._open().status_code, 200)
+        invalid = self.client.post(
+            "/assistant/session/resume",
+            headers=self.headers,
+            json={"session_id": "not-a-handle"},
+        )
+        self.assertEqual(invalid.status_code, 422)
+
+        self.pi_chat.resume_error = BridgeError(404, "pi_session_not_found", "unknown session")
+        missing = self.client.post(
+            "/assistant/session/resume",
+            headers=self.headers,
+            json={"session_id": "b" * 16},
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json()["error"]["code"], "pi_session_not_found")
 
     def test_idle_reaping_clears_prepared_context(self) -> None:
         self.assertEqual(self._open().status_code, 200)

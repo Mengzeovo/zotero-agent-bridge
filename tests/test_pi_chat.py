@@ -469,6 +469,171 @@ class PiChatManagerTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "pi_session_busy")
         manager.abort()
 
+    def test_reset_archives_session_and_resume_restores_it(self) -> None:
+        manager = self.manager()
+        first = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        old_session = Path(first["session_file"])
+        document_id = first["document_id"]
+
+        manager.reset_item(ITEM_A, self.pdf_a, library_id=7)
+        listing = manager.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(listing["document_id"], document_id)
+        self.assertEqual(len(listing["sessions"]), 1)
+        archived = listing["sessions"][0]
+        self.assertFalse(archived["current"])
+        self.assertTrue(archived["available"])
+        self.assertEqual(Path(archived["session_file"]), old_session)
+        self.assertTrue(archived["archived_at"])
+        old_session_id = archived["session_id"]
+
+        second = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        new_session = Path(second["session_file"])
+        self.assertNotEqual(new_session, old_session)
+        listing = manager.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(len(listing["sessions"]), 2)
+        self.assertTrue(listing["sessions"][0]["current"])
+        self.assertEqual(listing["sessions"][1]["session_id"], old_session_id)
+
+        resumed = manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id=old_session_id)
+        self.assertTrue(resumed["resumed"])
+        self.assertEqual(Path(resumed["session_file"]), old_session)
+        self.assertFalse(manager.status()["running"])
+
+        reopened = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(Path(reopened["session_file"]), old_session)
+        launches = self.wait_for_launches(3)
+        self.assertIn("--session", launches[2]["argv"])
+        self.assertIn(str(old_session.resolve()), launches[2]["argv"])
+
+        listing = manager.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(len(listing["sessions"]), 2)
+        self.assertTrue(listing["sessions"][0]["current"])
+        self.assertEqual(Path(listing["sessions"][0]["session_file"]), old_session)
+        self.assertEqual(Path(listing["sessions"][1]["session_file"]), new_session)
+        self.assertFalse(listing["sessions"][1]["current"])
+
+    def test_resume_session_rejects_unknown_and_escaping_handles(self) -> None:
+        manager = self.manager()
+        first = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        old_session = Path(first["session_file"])
+        document_id = first["document_id"]
+        manager.reset_item(ITEM_A, self.pdf_a, library_id=7)
+
+        with self.assertRaises(BridgeError) as caught:
+            manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id="0" * 16)
+        self.assertEqual(caught.exception.code, "pi_session_not_found")
+        with self.assertRaises(BridgeError) as caught:
+            manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id="not-a-handle")
+        self.assertEqual(caught.exception.code, "invalid_session_id")
+
+        index_path = self.settings.bridge_home / "pi-chat" / "session-index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        outside = self.root / "outside-session.jsonl"
+        outside.write_text("", encoding="utf-8")
+        index["sessions"][document_id]["history"].append(
+            {"session_file": str(outside), "archived_at": "2026-01-01T00:00:00+00:00", "last_used_at": None}
+        )
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        outside_id = manager._session_handle(outside)
+        with self.assertRaises(BridgeError) as caught:
+            manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id=outside_id)
+        self.assertEqual(caught.exception.code, "pi_session_outside_session_dir")
+
+        old_session.unlink()
+        old_id = manager._session_handle(old_session)
+        with self.assertRaises(BridgeError) as caught:
+            manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id=old_id)
+        self.assertEqual(caught.exception.code, "pi_session_file_missing")
+
+    def test_resume_session_blocks_while_streaming(self) -> None:
+        manager = self.manager()
+        first = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        old_session = Path(first["session_file"])
+        manager.reset_item(ITEM_A, self.pdf_a, library_id=7)
+        manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        old_session_id = manager._session_handle(old_session)
+
+        manager.prompt("hold")
+        with self.assertRaises(BridgeError) as caught:
+            manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id=old_session_id)
+        self.assertEqual(caught.exception.code, "pi_session_busy")
+        manager.abort()
+        self.assertTrue(manager.wait_until_idle())
+
+        listing = manager.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        self.assertTrue(listing["sessions"][0]["current"])
+        self.assertEqual(listing["sessions"][1]["session_id"], old_session_id)
+
+    def _write_orphan_session(self, name: str, session_name: str, user_text: str = "orphan question") -> Path:
+        session_dir = self.settings.pi.session_dir
+        session_dir.mkdir(parents=True, exist_ok=True)
+        path = session_dir / name
+        lines = [
+            {"type": "session", "version": 3, "id": name.split(".")[0], "timestamp": "2026-08-19T10:19:37Z", "cwd": str(self.pdf_a.parent.resolve())},
+            {"type": "session_info", "id": "si1", "parentId": None, "timestamp": "2026-08-19T10:19:38Z", "name": session_name},
+            {"type": "message", "id": "m1", "parentId": "si1", "timestamp": "2026-08-19T10:19:40Z", "message": {"role": "user", "content": user_text}},
+            {"type": "message", "id": "m2", "parentId": "m1", "timestamp": "2026-08-19T10:19:45Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "orphan answer"}]}},
+        ]
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_orphan_sessions_are_listed_and_resumable(self) -> None:
+        manager = self.manager()
+        opened = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        document_id = opened["document_id"]
+        current_session = Path(opened["session_file"])
+        session_name = f"zotero-{ITEM_A}-{document_id[:8]}"
+        orphan = self._write_orphan_session("orphan-older.jsonl", session_name)
+        unrelated = self._write_orphan_session("unrelated.jsonl", "someone-else")
+
+        listing = manager.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        orphan_entries = [entry for entry in listing["sessions"] if entry.get("orphan")]
+        self.assertEqual(len(orphan_entries), 1)
+        self.assertEqual(Path(orphan_entries[0]["session_file"]), orphan)
+        self.assertTrue(orphan_entries[0]["available"])
+        self.assertNotIn(unrelated, [Path(entry["session_file"]) for entry in listing["sessions"]])
+        self.assertEqual(listing["sessions"][0]["session_file"], str(current_session))
+
+        orphan_id = orphan_entries[0]["session_id"]
+        resumed = manager.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id=orphan_id)
+        self.assertEqual(Path(resumed["session_file"]), orphan)
+        reopened = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(Path(reopened["session_file"]), orphan)
+        launches = self.wait_for_launches(2)
+        self.assertIn("--session", launches[1]["argv"])
+        self.assertIn(str(orphan.resolve()), launches[1]["argv"])
+
+        listing = manager.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(listing["sessions"][0]["session_file"], str(orphan))
+        self.assertTrue(listing["sessions"][0]["current"])
+        self.assertFalse(listing["sessions"][0].get("orphan", False))
+        self.assertFalse(any(entry.get("orphan") for entry in listing["sessions"]))
+        archived_current = [entry for entry in listing["sessions"] if entry["session_file"] == str(current_session)]
+        self.assertEqual(len(archived_current), 1)
+        self.assertFalse(archived_current[0]["current"])
+
+    def test_orphan_listing_works_without_any_index_record(self) -> None:
+        manager = self.manager()
+        opened = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        document_id = opened["document_id"]
+        session_name = f"zotero-{ITEM_A}-{document_id[:8]}"
+        orphan = self._write_orphan_session("orphan-no-record.jsonl", session_name)
+        manager.close()
+
+        index_path = self.settings.bridge_home / "pi-chat" / "session-index.json"
+        index_path.unlink()
+
+        replacement = self.manager()
+        listing = replacement.list_session_history(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(len(listing["sessions"]), 1)
+        self.assertTrue(listing["sessions"][0]["orphan"])
+        self.assertEqual(Path(listing["sessions"][0]["session_file"]), orphan)
+
+        resumed = replacement.resume_session(ITEM_A, self.pdf_a, library_id=7, session_id=listing["sessions"][0]["session_id"])
+        self.assertEqual(Path(resumed["session_file"]), orphan)
+        reopened = replacement.open_item(ITEM_A, self.pdf_a, library_id=7)
+        self.assertEqual(Path(reopened["session_file"]), orphan)
+
     def test_same_item_key_different_pdf_never_leaks_session(self) -> None:
         manager = self.manager()
         first = manager.open_item(ITEM_A, self.pdf_a)

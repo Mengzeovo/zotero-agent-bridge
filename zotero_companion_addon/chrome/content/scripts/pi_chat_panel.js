@@ -59,6 +59,15 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       send: "发送",
       stop: "停止",
       reset: "新会话",
+      history: "历史会话",
+      historyEmpty: "这篇论文还没有历史会话",
+      historyCurrent: "当前会话",
+      historyUntitled: "（无预览）",
+      historyFailed: "无法读取历史会话",
+      historyMessages: "{count} 条消息",
+      resumeConfirm: "切换到所选历史会话？当前对话会保留在历史列表中。",
+      resumeDone: "已切换到所选会话",
+      resumeFailed: "切换历史会话失败",
       save: "保存为 Zotero Note",
       savePending: "等待一条完整的 Pi 回答后即可保存",
       saveConfirm: "将当前完整回答保存为这篇文献的 Zotero Note？",
@@ -116,6 +125,15 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       send: "Send",
       stop: "Stop",
       reset: "New session",
+      history: "History",
+      historyEmpty: "No past sessions for this paper",
+      historyCurrent: "Current session",
+      historyUntitled: "(no preview)",
+      historyFailed: "Could not load session history",
+      historyMessages: "{count} message(s)",
+      resumeConfirm: "Switch to this past session? The current conversation stays in the history list.",
+      resumeDone: "Switched to the selected session",
+      resumeFailed: "Could not switch sessions",
       save: "Save as Zotero Note",
       savePending: "A complete Pi answer is required before saving",
       saveConfirm: "Save the current complete answer as a Zotero Note for this paper?",
@@ -338,9 +356,18 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       thinkingRow.append(thinkingLabel, this.thinkingSelect);
       this._setThinkingPlaceholder(this.strings.thinkingOpenHint);
 
+      const selectsRow = createElement(doc, "div", "zab-chat__selects-row");
+      selectsRow.append(modelRow, thinkingRow);
+
       this.transcript = createElement(doc, "div", "zab-chat__transcript");
       this.transcript.setAttribute("role", "log");
       this.transcript.setAttribute("aria-live", "polite");
+      this._copyHandler = (event) => {
+        if (this.controller.markdownRenderer && typeof this.controller.markdownRenderer.handleCopy === "function") {
+          this.controller.markdownRenderer.handleCopy(event, this.transcript);
+        }
+      };
+      this.doc.addEventListener("copy", this._copyHandler, true);
       this.emptyState = createElement(doc, "p", "zab-chat__empty", this.strings.empty);
       this.transcript.append(this.emptyState);
 
@@ -367,19 +394,33 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.stopButton = this._button(this.strings.stop, "zab-chat__button zab-chat__button--danger", () => this.stop());
       primaryActions.append(this.sendButton, this.stopButton);
       const secondaryActions = createElement(doc, "div", "zab-chat__actions-secondary");
+      this.historyButton = this._button(this.strings.history, "zab-chat__button zab-chat__button--quiet", () => void this.toggleHistory());
       this.resetButton = this._button(this.strings.reset, "zab-chat__button zab-chat__button--quiet", () => this.reset());
       this.saveButton = this._button(this.strings.save, "zab-chat__button zab-chat__button--quiet", () => this.save());
       this.saveButton.disabled = true;
       this.saveButton.title = this.strings.savePending;
-      secondaryActions.append(this.resetButton, this.saveButton);
-      actionRow.append(primaryActions, secondaryActions);
+      secondaryActions.append(this.historyButton, this.resetButton, this.saveButton);
+
+      this.historyPopover = createElement(doc, "div", "zab-chat__history-popover");
+      this.historyPopover.hidden = true;
+      this._historyDismissHandler = (event) => {
+        if (this.historyPopover.hidden) {
+          return;
+        }
+        const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+        if (path.includes(this.historyPopover) || path.includes(this.historyButton)) {
+          return;
+        }
+        this._hideHistory();
+      };
+      this.doc.addEventListener("click", this._historyDismissHandler, true);
+      actionRow.append(primaryActions, secondaryActions, this.historyPopover);
 
       this.root.append(
         paperRow,
         statusRow,
         this.transcript,
-        modelRow,
-        thinkingRow,
+        selectsRow,
         this.imageTray,
         this.input,
         actionRow,
@@ -394,6 +435,158 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       button.type = "button";
       button.addEventListener("click", () => void handler());
       return button;
+    }
+
+    _hideHistory() {
+      if (this.historyPopover) {
+        this.historyPopover.hidden = true;
+      }
+    }
+
+    _formatHistoryTime(value) {
+      const time = Date.parse(String(value || ""));
+      if (!Number.isFinite(time)) {
+        return "";
+      }
+      try {
+        return new Date(time).toLocaleString(this.controller.localeName, {
+          month: "numeric",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      } catch (error) {
+        return new Date(time).toLocaleString();
+      }
+    }
+
+    async toggleHistory() {
+      if (this.disposed) {
+        return;
+      }
+      if (!this.historyPopover.hidden) {
+        this._hideHistory();
+        return;
+      }
+      if (!this.sessionOpen || this.sending || this.streaming) {
+        return;
+      }
+      const scope = this._captureScope();
+      try {
+        const response = await this.controller.bridgeRequest("GET", "/assistant/session/history");
+        if (!this._scopeMatches(scope)) {
+          return;
+        }
+        const sessions = response && Array.isArray(response.sessions) ? response.sessions : [];
+        this._renderHistory(sessions);
+      } catch (error) {
+        if (this._scopeMatches(scope)) {
+          this.controller.log("warn", "pi_chat_history_failed", error);
+          this._setStatus("warning", this.strings.historyFailed);
+        }
+      }
+    }
+
+    _renderHistory(sessions) {
+      const doc = this.doc;
+      this.historyPopover.replaceChildren();
+      if (!sessions.length) {
+        this.historyPopover.append(createElement(doc, "div", "zab-chat__history-empty", this.strings.historyEmpty));
+      }
+      for (const session of sessions) {
+        const item = createElement(doc, "button", "zab-chat__history-item");
+        item.type = "button";
+        const preview = createElement(
+          doc,
+          "div",
+          "zab-chat__history-preview",
+          String(session && session.preview || "").trim() || this.strings.historyUntitled,
+        );
+        const messageCount = Number(session && session.user_messages || 0) + Number(session && session.assistant_messages || 0);
+        const metaParts = [];
+        if (session && session.current) {
+          metaParts.push(this.strings.historyCurrent);
+        }
+        const timeText = this._formatHistoryTime(session && (session.archived_at || session.updated_at || session.started_at));
+        if (timeText) {
+          metaParts.push(timeText);
+        }
+        if (messageCount > 0) {
+          metaParts.push(this.strings.historyMessages.replace("{count}", String(messageCount)));
+        }
+        item.append(preview, createElement(doc, "div", "zab-chat__history-meta", metaParts.join(" · ")));
+        if (!session || session.current || !session.available || !session.session_id) {
+          item.disabled = true;
+        } else {
+          const sessionId = String(session.session_id);
+          item.addEventListener("click", () => void this._resumeSession(sessionId));
+        }
+        this.historyPopover.append(item);
+      }
+      this.historyPopover.hidden = false;
+    }
+
+    async _resumeSession(sessionId) {
+      if (!this.sessionOpen || this.streaming || this.sending || this.disposed) {
+        return;
+      }
+      if (!this.win.confirm(this.strings.resumeConfirm)) {
+        return;
+      }
+      this._hideHistory();
+      this.sessionGeneration += 1;
+      const scope = this._captureScope();
+      this.sending = true;
+      this._setStatus("working", this.strings.opening);
+      this._updateControls();
+      try {
+        const response = await this.controller.bridgeRequest("POST", "/assistant/session/resume", {
+          session_id: sessionId,
+        });
+        if (!this._scopeMatches(scope)) {
+          return;
+        }
+        this.cursor = Number(response.session && response.session.last_cursor) || 0;
+        this.pollIntervalMs = Math.max(100, Number(response.poll_interval_ms) || this.pollIntervalMs);
+        this.sessionOpen = true;
+        const resumeContext = response.context || {};
+        this.sessionIdentity = {
+          itemKey: this.selection.itemKey,
+          attachmentKey: this.selection.attachmentKey,
+          contextFingerprint: String(resumeContext.fingerprint || "").toLowerCase(),
+          documentId: String(response.session && response.session.document_id || "").toLowerCase(),
+        };
+        this.contextInjectionRequired = Boolean(response.context_injection_required);
+        this.contextUpdated = Boolean(response.context_updated);
+        this.activeQuestion = null;
+        this.lastFinalAnswer = null;
+        this.lastFinalQuestion = null;
+        this.lastFinalScope = null;
+        this.lastFinalDocument = null;
+        this._clearTranscript();
+        await this._loadMessages(scope);
+        if (!this._scopeMatches(scope)) {
+          return;
+        }
+        await this._loadModels(scope);
+        if (!this._scopeMatches(scope)) {
+          return;
+        }
+        await this._loadThinkingLevels(scope);
+        if (!this._scopeMatches(scope)) {
+          return;
+        }
+        this._setStatus("ready", this.strings.resumeDone);
+      } catch (error) {
+        if (this._scopeMatches(scope)) {
+          this._showError(error);
+        }
+      } finally {
+        if (this._scopeMatches(scope)) {
+          this.sending = false;
+          this._updateControls();
+        }
+      }
     }
 
     _renderImages() {
@@ -534,6 +727,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         }
       }
       this.openButton.disabled = !hasSelection || busy || this.sessionOpen;
+      this.historyButton.disabled = !this.sessionOpen || busy;
       this.resetButton.disabled = !this.sessionOpen || busy;
       this.modelSelect.disabled = !this.sessionOpen || busy || this.modelLoading || !this.models.length;
       this.thinkingSelect.disabled = !this.sessionOpen || busy || this.thinkingLoading || !this.thinkingLevels.length;
@@ -683,6 +877,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.lastErrorContent = null;
       this.openButton.textContent = this.strings.open;
       this._cancelPoll();
+      this._hideHistory();
       this._renderImages();
       this._clearTranscript();
       if (!selection) {
@@ -1362,6 +1557,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         this.lastFinalQuestion = null;
         this.lastFinalScope = null;
         this.lastFinalDocument = null;
+        this._hideHistory();
         this._clearTranscript();
         await this._loadModels(scope);
         if (!this._scopeMatches(scope)) {
@@ -1391,6 +1587,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       const selection = this.pendingSelection;
       this.pendingSelection = null;
       this.hasPendingSelection = false;
+      this._hideHistory();
       this._applySelection(selection);
     }
 
@@ -1413,6 +1610,14 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this._cancelPoll();
       if (this.currentAssistant && this.currentAssistant._zabRenderFrame) {
         this.win.cancelAnimationFrame(this.currentAssistant._zabRenderFrame);
+      }
+      if (this._copyHandler) {
+        this.doc.removeEventListener("copy", this._copyHandler, true);
+        this._copyHandler = null;
+      }
+      if (this._historyDismissHandler) {
+        this.doc.removeEventListener("click", this._historyDismissHandler, true);
+        this._historyDismissHandler = null;
       }
       this.root.remove();
     }

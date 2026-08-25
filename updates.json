@@ -5,7 +5,7 @@
         {
           "version": "0.3.5",
           "update_link": "https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v0.3.5-beta/zotero-agent-bridge-addon-0.3.5.xpi",
-          "update_hash": "sha512:3fffd5a80ca5bff916c1505d7cc0ee5f533dcd03bb0d3cf72a249c27473a239ebf50ae2af5cc98cd082c420ef6199877b54b4732edce3522d09485e9e553eb37",
+          "update_hash": "sha512:37f819a3b683d649147853c97946d34a2bcd66fe6640214989928f4184dbc16d8b71c485581c2d60a2b6a59eb5e75327951805386f9b3e6e31c7db369d69699f",
           "applications": {
             "zotero": {
               "strict_min_version": "7.0",

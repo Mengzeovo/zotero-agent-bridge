@@ -75,6 +75,8 @@ All endpoints require the normal Bridge token.
 - `GET /assistant/session/messages`
 - `POST /assistant/session/abort`
 - `POST /assistant/session/reset`
+- `GET /assistant/session/history`
+- `POST /assistant/session/resume`
 - `POST /assistant/session/save-note`
 - `GET /lifecycle`
 - `POST /lifecycle/shutdown` (requires the matching add-on owner token)
@@ -100,6 +102,7 @@ External text is rendered with `textContent` in the panel. Saved-note metadata, 
 - Context fingerprints cover the PDF hash and stable metadata, note, and annotation content.
 - The complete context is injected on the first question and reinjected after the fingerprint changes.
 - Session JSONL files and the document registry are stored under the configured Pi session directory.
+- Resetting archives the current session file into the document's history list (capped at 20); the History button lists archived sessions with a preview of the first question and can resume one so the conversation continues where it left off. Resuming archives the previously current session and requires a fresh context injection on the next question.
 - Idle processes are reaped; reopening the document resumes the persisted session.
 
 ## Deferred scope

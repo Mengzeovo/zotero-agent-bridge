@@ -65,6 +65,8 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
             "/assistant/thinking-levels",
             "/assistant/session/thinking-level",
             "/assistant/session/save-note",
+            "/assistant/session/history",
+            "/assistant/session/resume",
         ):
             self.assertIn(endpoint, panel)
         self.assertIn("textContent", panel)
@@ -108,6 +110,20 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertIn("this.lastErrorMessage !== message", panel)
         self.assertIn("this.strings.retryStart", panel)
         self.assertIn("markdownRenderer.render", panel)
+        self.assertIn('this.doc.addEventListener("copy", this._copyHandler, true)', panel)
+        self.assertIn('this.doc.removeEventListener("copy", this._copyHandler, true)', panel)
+        self.assertIn("markdownRenderer.handleCopy", panel)
+        self.assertIn("this.historyButton", panel)
+        self.assertIn("this.historyPopover", panel)
+        self.assertIn("toggleHistory", panel)
+        self.assertIn("_resumeSession", panel)
+        self.assertIn("session_id", panel)
+        self.assertIn('this.doc.addEventListener("click", this._historyDismissHandler, true)', panel)
+        self.assertIn('this.doc.removeEventListener("click", this._historyDismissHandler, true)', panel)
+        self.assertIn("this._hideHistory()", panel)
+        self.assertIn("zab-chat__history-popover", panel)
+        self.assertIn("selectsRow.append(modelRow, thinkingRow)", panel)
+        self.assertIn("actionRow.append(primaryActions, secondaryActions, this.historyPopover)", panel)
         self.assertIn("this.modelSelect", panel)
         self.assertIn("this._loadModels(scope)", panel)
         self.assertIn("this.thinkingSelect", panel)
@@ -223,20 +239,23 @@ assert.strictEqual(test.blockMathSource('$$\\nx^2\\n$$'), 'x^2');
 assert.strictEqual(test.blockMathSource('\\\\[a+b\\\\]'), 'a+b');
 assert.deepStrictEqual(test.splitInlineMath('A $x+y$ B'), [
   {{ type: 'text', value: 'A ' }},
-  {{ type: 'math', value: 'x+y' }},
+  {{ type: 'math', value: 'x+y', raw: '$x+y$' }},
   {{ type: 'text', value: ' B' }},
 ]);
 assert.deepStrictEqual(test.splitInlineMath('A \\\\(x+y\\\\) B'), [
   {{ type: 'text', value: 'A ' }},
-  {{ type: 'math', value: 'x+y' }},
+  {{ type: 'math', value: 'x+y', raw: '\\\\(x+y\\\\)' }},
   {{ type: 'text', value: ' B' }},
 ]);
 const prepared = test.prepareMarkdown(marked, {json.dumps(problematic, ensure_ascii=False)});
 assert.strictEqual(prepared.math.length, 2);
 assert.strictEqual(prepared.math[0].displayMode, true);
 assert.match(prepared.math[0].source, /接收功率[\\s\\S]*\\n=\\n[\\s\\S]*湍流衰落/);
+assert.strictEqual(prepared.math[0].raw.startsWith(String.fromCharCode(92) + '['), true);
+assert.strictEqual(prepared.math[0].raw.endsWith(String.fromCharCode(92) + ']'), true);
 assert.strictEqual(prepared.math[1].displayMode, false);
 assert.strictEqual(prepared.math[1].source, {json.dumps(r'L_{\mathrm{fog}}')});
+assert.strictEqual(prepared.math[1].raw, {json.dumps(r'\(L_{\mathrm{fog}}\)')});
 assert.strictEqual(prepared.tokens.some((token) => token.type === 'heading'), false);
 const calls = [];
 const makeNode = (tag) => ({{
@@ -258,11 +277,19 @@ const target = makeNode('div');
 target.ownerDocument = doc;
 renderer.create({{
   marked,
-  katex: {{ render: (source, _container, options) => calls.push({{ source, displayMode: options.displayMode }}) }},
+  katex: {{ render: (source, container, options) => calls.push({{
+    source,
+    displayMode: options.displayMode,
+    raw: container.dataset.zabMathSource,
+  }}) }},
 }}).render(target, {json.dumps(problematic, ensure_ascii=False)});
 assert.deepStrictEqual(calls, [
-  {{ source: prepared.math[0].source, displayMode: true }},
-  {{ source: {json.dumps(r'L_{\mathrm{fog}}')}, displayMode: false }},
+  {{ source: prepared.math[0].source, displayMode: true, raw: prepared.math[0].raw }},
+  {{
+    source: {json.dumps(r'L_{\mathrm{fog}}')},
+    displayMode: false,
+    raw: {json.dumps(r'\(L_{\mathrm{fog}}\)')},
+  }},
 ]);
 const code = test.protectMath({json.dumps(protected_code)});
 assert.strictEqual(code.math.length, 0);
@@ -270,7 +297,80 @@ assert.strictEqual(code.source, {json.dumps(protected_code)});
 const dollarPrepared = test.prepareMarkdown(marked, '$$\\na=b\\n$$ and $x+y$');
 assert.strictEqual(dollarPrepared.math.length, 2);
 assert.strictEqual(dollarPrepared.math[0].displayMode, true);
+assert.strictEqual(dollarPrepared.math[0].raw, '$$\\na=b\\n$$');
 assert.strictEqual(dollarPrepared.math[1].displayMode, false);
+assert.strictEqual(dollarPrepared.math[1].raw, '$x+y$');
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+
+    def test_formula_copy_restores_original_latex_in_node(self) -> None:
+        inline_source = r"\(x+y\)"
+        script = f"""
+const assert = require('assert');
+const rendererModule = require({json.dumps(str(MARKDOWN_SCRIPT))});
+const test = rendererModule.__test;
+const raw = {json.dumps(inline_source)};
+const formula = {{ dataset: {{ zabMathSource: raw }} }};
+const formulaParent = {{ closest: () => formula }};
+const formulaText = {{ parentElement: formulaParent }};
+const formulaSelection = {{
+  isCollapsed: false,
+  rangeCount: 1,
+  getRangeAt: () => ({{
+    startContainer: formulaText,
+    endContainer: formulaText,
+    intersectsNode: (node) => node === formulaRoot,
+  }}),
+}};
+const formulaDoc = {{ defaultView: {{ getSelection: () => formulaSelection }} }};
+const formulaRoot = {{ ownerDocument: formulaDoc, contains: (node) => node === formula }};
+const writes = [];
+const event = {{
+  clipboardData: {{ setData: (type, value) => writes.push([type, value]) }},
+  preventDefault() {{ this.prevented = true; }},
+}};
+assert.strictEqual(rendererModule.create({{}}).handleCopy(event, formulaRoot), true);
+assert.deepStrictEqual(writes, [['text/plain', raw]]);
+assert.strictEqual(event.prevented, true);
+
+const clonedMath = {{
+  dataset: {{ zabMathSource: '$x+y$' }},
+  textContent: 'rendered math',
+  replaceChildren(node) {{ this.textContent = node.textContent; }},
+}};
+const fragment = {{
+  querySelectorAll: () => [clonedMath],
+  get textContent() {{ return `Before ${{clonedMath.textContent}} after`; }},
+}};
+const host = {{
+  style: {{}},
+  setAttribute() {{}},
+  append(node) {{ this.child = node; }},
+  get innerText() {{ return this.child.textContent; }},
+  remove() {{ this.removed = true; }},
+}};
+const mixedDoc = {{
+  body: {{ append(node) {{ this.child = node; }} }},
+  createElementNS: () => host,
+  createTextNode: (value) => ({{ textContent: value }}),
+}};
+const outside = {{ parentElement: {{ closest: () => null }} }};
+const mixedSelection = {{
+  isCollapsed: false,
+  rangeCount: 1,
+  getRangeAt: () => ({{
+    startContainer: outside,
+    endContainer: outside,
+    intersectsNode: () => true,
+    cloneContents: () => fragment,
+  }}),
+}};
+assert.strictEqual(
+  test.selectionTextWithMath(mixedDoc, {{ contains: () => false }}, mixedSelection),
+  'Before $x+y$ after',
+);
+assert.strictEqual(host.removed, true);
 """
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
@@ -378,6 +478,9 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         self.assertIn("return hashBytes(await IOUtils.read(path));", manager)
         self.assertIn("const previousState = await readInstallState(root);", manager)
         self.assertIn("...previousState", manager)
+        self.assertIn("bridge_bundle_existing_quarantined", manager)
+        self.assertIn(".invalid-${Services.uuid.generateUUID()", manager)
+        self.assertIn('throw new BundleError(\n              "bundle_existing_invalid"', manager)
         self.assertIn('["ready", "rollback"].includes(state.bridgeBundleState)', bootstrap)
         self.assertIn('typeof error.code === "string"', bootstrap)
         self.assertIn('const bundleInstallError = state.bridgeBundleState === "error"', bootstrap)
@@ -399,7 +502,12 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
         self.assertNotIn('item-details[tabtype="library"] item-pane-section', styles)
         self.assertIn("-moz-box-orient: vertical", styles)
         self.assertIn(".zab-chat--deck {\n  width: 100%;\n  height: 100%;\n  flex: 1 1 0;", styles)
-        self.assertIn(".zab-chat--deck .zab-chat__transcript {\n  min-height: 0;\n  max-height: calc(100vh - 315px);\n}", styles)
+        self.assertIn(".zab-chat--deck .zab-chat__transcript {\n  min-height: 0;\n  max-height: calc(100vh - 279px);\n}", styles)
+        self.assertIn(".zab-chat__selects-row", styles)
+        self.assertIn(".zab-chat__actions {\n  display: flex;\n  flex-wrap: wrap;\n  justify-content: space-between;\n  gap: 6px;\n  position: relative;\n}", styles)
+        self.assertIn("bottom: calc(100% + 6px);", styles)
+        self.assertIn("max-height: 260px;", styles)
+        self.assertNotIn("max-height: 45%;", styles)
         self.assertIn(".zab-chat__model-select", styles)
         self.assertIn(".zab-chat__model-select:focus-visible", styles)
         self.assertIn(".zab-chat__image-tray", styles)
@@ -497,6 +605,152 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
             update["update_hash"],
             "sha512:" + hashlib.sha512(XPI.read_bytes()).hexdigest(),
         )
+
+    def test_bundle_manager_quarantines_invalid_install_and_reinstalls_in_node(self) -> None:
+        script = r"""
+const assert = require('assert');
+const crypto = require('crypto');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { pathToFileURL } = require('url');
+
+const managerFactory = require(process.argv[1]);
+const work = fs.mkdtempSync(path.join(os.tmpdir(), 'zab-bundle-test-'));
+const localAppData = path.join(work, 'LocalAppData');
+const addonRoot = path.join(work, 'addon');
+const bundleSourceDir = path.join(addonRoot, 'bridge', 'windows-x64');
+fs.mkdirSync(path.join(bundleSourceDir, 'zab-bridge'), { recursive: true });
+
+const exeBytes = Buffer.from('fake bridge exe v2');
+fs.writeFileSync(path.join(bundleSourceDir, 'zab-bridge', 'zab-bridge.exe'), exeBytes);
+const manifest = {
+  bundle_schema_version: 1,
+  protocol_version: 1,
+  distribution: 'xpi-bundled',
+  platform: 'windows',
+  architecture: 'x64',
+  bridge_version: '0.3.5',
+  entrypoint: 'zab-bridge/zab-bridge.exe',
+  sentinel: '.zab-bundle-installed.json',
+  files: [
+    {
+      path: 'zab-bridge/zab-bridge.exe',
+      size: exeBytes.length,
+      sha256: crypto.createHash('sha256').update(exeBytes).digest('hex'),
+    },
+  ],
+};
+const manifestRaw = JSON.stringify(manifest, null, 2);
+fs.writeFileSync(path.join(bundleSourceDir, 'bridge-manifest.json'), manifestRaw);
+const manifestSha256 = crypto.createHash('sha256').update(manifestRaw, 'utf8').digest('hex');
+
+const installRoot = path.join(localAppData, 'ZoteroAgentBridge', 'bridge');
+const staleRoot = path.join(installRoot, '0.3.5');
+fs.mkdirSync(staleRoot, { recursive: true });
+fs.writeFileSync(path.join(staleRoot, '.zab-bundle-installed.json'), JSON.stringify({
+  sentinel_schema_version: 1,
+  bridge_version: '0.3.5',
+  protocol_version: 1,
+  manifest_sha256: 'stale-manifest-hash',
+  installed_at: '2026-01-01T00:00:00.000Z',
+  entrypoint: 'zab-bridge/zab-bridge.exe',
+}));
+fs.writeFileSync(path.join(staleRoot, 'zab-bridge-placeholder.txt'), 'old install');
+
+const logs = [];
+const localFile = () => ({
+  path: '',
+  initWithPath(value) { this.path = value; },
+  create() { fs.writeFileSync(this.path, '', { flag: 'wx' }); },
+});
+const cryptoHash = () => ({
+  chunks: [],
+  init() {},
+  update(bytes) { this.chunks.push(Buffer.from(bytes.buffer || bytes)); },
+  finish() {
+    return crypto.createHash('sha256').update(Buffer.concat(this.chunks)).digest('latin1');
+  },
+});
+const Services = {
+  dirsvc: { get: () => ({ path: localAppData }) },
+  uuid: { generateUUID: () => ({ toString: () => '{' + crypto.randomUUID() + '}' }) },
+  appinfo: { processID: process.pid },
+  io: { newURI: (uri) => ({
+    scheme: 'file',
+    QueryInterface() { return { file: { path: decodeURIComponent(new URL(uri).pathname).replace(/^\//, '') } }; },
+  }) },
+};
+const IOUtils = {
+  makeDirectory: async (dir) => { fs.mkdirSync(dir, { recursive: true }); },
+  exists: async (target) => fs.existsSync(target),
+  stat: async (target) => {
+    const stat = fs.statSync(target);
+    return { type: stat.isDirectory() ? 'directory' : 'regular', size: stat.size, lastModified: stat.mtimeMs };
+  },
+  read: async (target) => new Uint8Array(fs.readFileSync(target)),
+  readUTF8: async (target) => fs.readFileSync(target, 'utf8'),
+  writeUTF8: async (target, value) => { fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, value, 'utf8'); },
+  copy: async (from, to, options = {}) => {
+    if (options.noOverwrite && fs.existsSync(to)) { throw new Error('exists'); }
+    fs.copyFileSync(from, to);
+  },
+  move: async (from, to, options = {}) => {
+    if (options.noOverwrite && fs.existsSync(to)) { throw new Error('exists'); }
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.renameSync(from, to);
+  },
+  remove: async (target) => { fs.rmSync(target, { force: true, recursive: true }); },
+};
+const PathUtils = {
+  join: (...parts) => path.join(...parts),
+  normalize: (value) => path.normalize(value),
+  parent: (value) => path.dirname(value),
+  profileDir: work,
+};
+const Zotero = { File: { getContentsFromURL: (url) => fs.readFileSync(decodeURIComponent(new URL(url).pathname).replace(/^\//, ''), 'utf8') } };
+const Components = {
+  interfaces: { nsIFile: { NORMAL_FILE_TYPE: 1 } },
+  classes: {
+    '@mozilla.org/file/local;1': { createInstance: localFile },
+    '@mozilla.org/security/hash;1': { createInstance: cryptoHash },
+  },
+};
+globalThis.Components = Components;
+
+(async () => {
+  const manager = managerFactory.create({
+    rootURI: pathToFileURL(addonRoot + '/').href,
+    addonVersion: '0.3.5',
+    Services, IOUtils, PathUtils, Zotero,
+    appendLog: (level, message, details) => logs.push({ level, message, details }),
+  });
+  const installed = await manager.ensureInstalled();
+  assert.strictEqual(installed.reused, false);
+  assert.deepStrictEqual(fs.readFileSync(installed.executable), exeBytes);
+  assert.strictEqual(fs.existsSync(path.join(staleRoot, 'zab-bridge-placeholder.txt')), false, 'stale contents are quarantined away');
+  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.3.5.invalid-'));
+  assert.strictEqual(quarantined.length, 1);
+  assert.strictEqual(fs.readFileSync(path.join(installRoot, quarantined[0], 'zab-bridge-placeholder.txt'), 'utf8'), 'old install');
+  const sentinel = JSON.parse(fs.readFileSync(path.join(installed.versionRoot, '.zab-bundle-installed.json'), 'utf8'));
+  assert.strictEqual(sentinel.manifest_sha256, manifestSha256);
+  assert.ok(logs.some((entry) => entry.message === 'bridge_bundle_existing_quarantined'));
+  assert.ok(logs.some((entry) => entry.message === 'bridge_bundle_installed'));
+
+  const reused = await manager.ensureInstalled();
+  assert.strictEqual(reused.reused, true);
+  assert.strictEqual(reused.executable, installed.executable);
+  console.log('bundle quarantine + reinstall behavior OK');
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(
+            ["node", "-e", script, str(ADDON / "chrome" / "content" / "scripts" / "bridge_bundle_manager.js")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("bundle quarantine + reinstall behavior OK", result.stdout)
 
 
 if __name__ == "__main__":

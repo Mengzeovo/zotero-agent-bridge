@@ -367,20 +367,33 @@ var ZoteroAgentBridgeBundleManager = (() => {
         const versionRoot = managedPath(root, manifest.bridge_version);
         if (await IOUtils.exists(versionRoot)) {
           const existingEntrypoint = await validateInstalled(versionRoot, manifest, manifestSha256);
-          if (!existingEntrypoint) {
-            throw new BundleError("bundle_existing_invalid", `Existing Bridge Bundle directory is invalid: ${versionRoot}`);
+          if (existingEntrypoint) {
+            const state = await readInstallState(root);
+            if (state.last_known_good !== manifest.bridge_version && state.pending_version !== manifest.bridge_version) {
+              await writeAtomic(managedPath(root, INSTALL_STATE), {
+                ...state,
+                state_schema_version: 1,
+                current_version: manifest.bridge_version,
+                pending_version: manifest.bridge_version,
+                updated_at: new Date().toISOString(),
+              });
+            }
+            return { root, versionRoot, executable: existingEntrypoint, manifest, manifestSha256, reused: true };
           }
-          const state = await readInstallState(root);
-          if (state.last_known_good !== manifest.bridge_version && state.pending_version !== manifest.bridge_version) {
-            await writeAtomic(managedPath(root, INSTALL_STATE), {
-              ...state,
-              state_schema_version: 1,
-              current_version: manifest.bridge_version,
-              pending_version: manifest.bridge_version,
-              updated_at: new Date().toISOString(),
-            });
+          const quarantineName = `${manifest.bridge_version}.invalid-${Services.uuid.generateUUID().toString().replace(/[{}-]/g, "")}`;
+          try {
+            await IOUtils.move(versionRoot, managedPath(root, quarantineName), { noOverwrite: true });
+          } catch (error) {
+            throw new BundleError(
+              "bundle_existing_invalid",
+              `Existing Bridge Bundle directory is invalid and could not be quarantined: ${versionRoot}`,
+              { cause: error && error.message ? error.message : String(error) },
+            );
           }
-          return { root, versionRoot, executable: existingEntrypoint, manifest, manifestSha256, reused: true };
+          await appendLog("warn", "bridge_bundle_existing_quarantined", {
+            bridge_version: manifest.bridge_version,
+            quarantined_to: quarantineName,
+          });
         }
 
         const stagingName = `.staging-${Services.uuid.generateUUID().toString().replace(/[{}-]/g, "")}`;

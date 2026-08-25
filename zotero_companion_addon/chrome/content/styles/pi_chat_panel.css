@@ -16,6 +16,7 @@
   color: var(--zab-ink);
   font: menu;
   font-size: 12px;
+  position: relative;
 }
 
 .zab-chat *,
@@ -94,6 +95,17 @@
 .zab-chat__status-text {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.zab-chat__selects-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.zab-chat__selects-row > .zab-chat__model-row {
+  flex: 1 1 0;
 }
 
 .zab-chat__model-row {
@@ -345,6 +357,63 @@
   font-style: italic;
 }
 
+.zab-chat__history-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  min-width: 230px;
+  max-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--zab-rule);
+  border-radius: 6px;
+  background: var(--zab-paper);
+  box-shadow: 0 6px 18px rgb(23 32 44 / 0.22);
+  scrollbar-width: thin;
+}
+
+.zab-chat__history-empty {
+  padding: 8px 10px;
+  color: var(--zab-muted);
+}
+
+.zab-chat__history-item {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.zab-chat__history-item:hover:not(:disabled) {
+  background: var(--zab-blue-soft);
+}
+
+.zab-chat__history-item:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+
+.zab-chat__history-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zab-chat__history-meta {
+  margin-top: 2px;
+  color: var(--zab-muted);
+  font-size: 0.86em;
+}
+
 item-pane-section[data-pane="zotero-agent-bridge-pi-chat"],
 item-pane-section[data-pane$="-zotero-agent-bridge-pi-chat"],
 item-pane-custom-section[data-pane="zotero-agent-bridge-pi-chat"],
@@ -372,12 +441,12 @@ collapsible-section[data-pane$="-zotero-agent-bridge-pi-chat"] {
   flex: 1 1 0;
   min-height: 0;
   overflow: hidden;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto auto;
 }
 
 .zab-chat--deck .zab-chat__transcript {
   min-height: 0;
-  max-height: calc(100vh - 315px);
+  max-height: calc(100vh - 279px);
 }
 
 .zab-chat__image-tray {
@@ -458,6 +527,7 @@ collapsible-section[data-pane$="-zotero-agent-bridge-pi-chat"] {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 6px;
+  position: relative;
 }
 
 .zab-chat__actions-primary,
@@ -526,6 +596,12 @@ collapsible-section[data-pane$="-zotero-agent-bridge-pi-chat"] {
 }
 
 @media (max-width: 360px) {
+  .zab-chat__selects-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
   .zab-chat__actions,
   .zab-chat__actions-primary,
   .zab-chat__actions-secondary {
