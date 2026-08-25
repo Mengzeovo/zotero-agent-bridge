@@ -1111,6 +1111,8 @@ function buildZoteroAgentBridge(rootURI) {
         return await handleUpdateItem(request);
       case "attach_linked_pdf":
         return await handleAttachLinkedPdf(request);
+      case "create_assistant_note":
+        return await handleCreateAssistantNote(request);
       case "create_note":
         return await handleCreateNote(request);
       case "create_collection":
@@ -1224,6 +1226,20 @@ function buildZoteroAgentBridge(rootURI) {
       sync_status: payload.sync_status || "synced",
       version: attachment.version,
     });
+  }
+
+  async function handleCreateAssistantNote(request) {
+    const payload = request.payload;
+    if (!/^[0-9a-f]{64}$/i.test(String(payload.document_id || ""))) {
+      throw new BridgeError("invalid_request", "Assistant document_id must be a SHA-256 hex digest");
+    }
+    if (!/^[0-9a-f]{64}$/i.test(String(payload.context_fingerprint || ""))) {
+      throw new BridgeError("invalid_request", "Assistant context_fingerprint must be a SHA-256 hex digest");
+    }
+    if (!String(payload.attachment_key || "").trim()) {
+      throw new BridgeError("invalid_request", "Assistant attachment_key is required");
+    }
+    return await handleCreateNote(request);
   }
 
   async function handleCreateNote(request) {

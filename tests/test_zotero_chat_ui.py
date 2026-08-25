@@ -444,6 +444,18 @@ assert.strictEqual(reader.entry.bodies.has(transientBody), false);
         result = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
+    def test_assistant_note_uses_dedicated_validated_queue_command(self) -> None:
+        sources = [
+            (ROOT / "zotero_companion_addon" / "bootstrap.js").read_text(encoding="utf-8-sig"),
+            (ADDON / "chrome" / "content" / "scripts" / "zotero_agent_bridge.js").read_text(encoding="utf-8-sig"),
+        ]
+        for source in sources:
+            self.assertIn('case "create_assistant_note":', source)
+            self.assertIn("handleCreateAssistantNote(request)", source)
+            self.assertIn("Assistant document_id must be a SHA-256 hex digest", source)
+            self.assertIn("Assistant context_fingerprint must be a SHA-256 hex digest", source)
+            self.assertIn("Assistant attachment_key is required", source)
+
     def test_save_note_state_guards_run_in_node(self) -> None:
         script = f"""
 const assert = require('assert');
