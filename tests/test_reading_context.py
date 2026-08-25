@@ -225,7 +225,7 @@ class FakeAnnotationLocalClient(ZoteroLocalClient):
         self.pdf_path = pdf_path
         self.fail_annotations = fail_annotations
 
-    def get_item(self, item_key: str) -> dict:
+    def _get_item(self, item_key: str) -> dict:
         return {
             "library": {"id": 11},
             "key": item_key,
@@ -240,7 +240,7 @@ class FakeAnnotationLocalClient(ZoteroLocalClient):
             },
         }
 
-    def get_children(self, item_key: str, item_type: str | None = None) -> list[dict]:
+    def _get_children(self, item_key: str, item_type: str | None = None) -> list[dict]:
         if item_key == "ITEMMAP1":
             return [
                 {
@@ -279,10 +279,10 @@ class FakeAnnotationLocalClient(ZoteroLocalClient):
             ]
         return []
 
-    def get_collections_map(self) -> dict[str, str]:
+    def _get_collections_map(self) -> dict[str, str]:
         return {}
 
-    def resolve_attachment_path(self, attachment: dict) -> str:
+    def _resolve_attachment_path(self, attachment: dict) -> str:
         return str(self.pdf_path)
 
 
@@ -309,17 +309,17 @@ class ZoteroLocalAnnotationMappingTest(unittest.TestCase):
     def test_resolves_absolute_linked_file_path_from_local_api(self) -> None:
         client = ZoteroLocalClient("http://127.0.0.1:23119/api/users/0", "test")
         attachment = {"data": {"path": str(self.pdf)}, "links": {}}
-        self.assertEqual(client.resolve_attachment_path(attachment), str(self.pdf))
+        self.assertEqual(client._resolve_attachment_path(attachment), str(self.pdf))
 
         windows_attachment = {"data": {"path": r"D:\\papers\\linked.pdf"}, "links": {}}
         self.assertEqual(
-            client.resolve_attachment_path(windows_attachment),
+            client._resolve_attachment_path(windows_attachment),
             r"D:\\papers\\linked.pdf",
         )
 
     def test_get_children_paginates_without_dropping_entries(self) -> None:
         client = PaginatedChildrenClient()
-        children = client.get_children("ITEMMAP1", item_type="annotation")
+        children = client._get_children("ITEMMAP1", item_type="annotation")
         self.assertEqual(len(children), 101)
         self.assertEqual(client.starts, [0, 100])
 
