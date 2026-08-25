@@ -1366,11 +1366,29 @@ class BridgeService:
             if question:
                 markdown_lines.extend(["", "## 问题", "", _quote_markdown(_escape_markdown_text_preserving_math(question.strip()))])
             markdown_lines.extend(["", "## 回答", "", _escape_markdown_text_preserving_math(answer)])
-            result = self.create_note(
-                context.item_key,
-                CreateNoteRequest(markdown="\n".join(markdown_lines).strip() + "\n"),
+            markdown_text = _normalize_note_math_delimiters("\n".join(markdown_lines).strip() + "\n")
+            note_html = self._render_note_html(markdown_text)
+            result = self.writer.execute(
+                "create_assistant_note",
+                {
+                    "item_key": context.item_key,
+                    "attachment_key": context.attachment_key,
+                    "document_id": request.document_id,
+                    "context_fingerprint": request.context_fingerprint,
+                    "markdown": markdown_text,
+                    "note_html": note_html,
+                },
             )
-            return AssistantSaveNoteResponse.model_validate(result.model_dump(mode="python"))
+            return AssistantSaveNoteResponse(
+                library_id=result.get("library_id"),
+                item_key=context.item_key,
+                attachment_key=None,
+                note_key=result.get("note_key"),
+                mirror_ref=None,
+                sync_status=result.get("sync_status") or "synced",
+                version=result.get("version"),
+                title=self._active_context_title,
+            )
 
     def abort_assistant_session(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()

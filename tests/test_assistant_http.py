@@ -43,7 +43,7 @@ class FakeWriter:
         self.calls.append((command, dict(payload)))
         if self.error:
             raise self.error
-        if command != "create_note":
+        if command != "create_assistant_note":
             raise AssertionError(f"Unexpected write command: {command} {payload}")
         note_key = f"NOTE{len(self.calls):04d}"
         item_key = str(payload["item_key"])
@@ -755,26 +755,30 @@ class AssistantHttpTest(unittest.TestCase):
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer, "stopReason": "stop"},
         ]
-        response = self.client.post(
-            "/assistant/session/save-note",
-            headers=self.headers,
-            json=self._save_payload(
-                answer,
-                question,
-                title="  # Custom `<Reading>` Record  ",
-            ),
-        )
+        with patch.object(self.service, "create_note", side_effect=AssertionError("generic note path used")):
+            response = self.client.post(
+                "/assistant/session/save-note",
+                headers=self.headers,
+                json=self._save_payload(
+                    answer,
+                    question,
+                    title="  # Custom `<Reading>` Record  ",
+                ),
+            )
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
         self.assertEqual(payload["item_key"], ITEM_KEY)
         self.assertEqual(payload["note_key"], "NOTE0001")
-        self.assertEqual(self.writer.calls[0][0], "create_note")
+        self.assertEqual(self.writer.calls[0][0], "create_assistant_note")
         self.assertEqual(self.writer.calls[0][1]["item_key"], ITEM_KEY)
+        self.assertEqual(self.writer.calls[0][1]["attachment_key"], ATTACHMENT_KEY)
+        self.assertEqual(self.writer.calls[0][1]["document_id"], DOCUMENT_ID)
+        self.assertEqual(self.writer.calls[0][1]["context_fingerprint"], CONTEXT_FINGERPRINT)
         self.assertIn("markdown", self.writer.calls[0][1])
         self.assertIn("note_html", self.writer.calls[0][1])
+        self.assertIsNone(payload["mirror_ref"])
 
-        note_path = Path(payload["mirror_ref"])
-        markdown = note_path.read_text(encoding="utf-8")
+        markdown = str(self.writer.calls[0][1]["markdown"])
         self.assertTrue(markdown.startswith("# Custom &lt;Reading&gt; Record\n"), markdown)
         self.assertIn("- 文献：&lt;img src=x onerror=\"alert(1)\"&gt; Assistant HTTP Test Paper", markdown)
         self.assertIn(f"- Zotero Item Key：{ITEM_KEY}", markdown)
@@ -867,7 +871,7 @@ Keep code `\(literal\)` unchanged.
         self.assertEqual(response.status_code, 200, response.text)
 
         command, note_payload = self.writer.calls[0]
-        self.assertEqual(command, "create_note")
+        self.assertEqual(command, "create_assistant_note")
         markdown = str(note_payload["markdown"])
         note_html = str(note_payload["note_html"])
         self.assertIn("Inline $x+y$ is important.", markdown)
