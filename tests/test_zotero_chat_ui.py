@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import unittest
 import xml.etree.ElementTree as ET
@@ -450,11 +451,23 @@ assert.strictEqual(reader.entry.bodies.has(transientBody), false);
             (ADDON / "chrome" / "content" / "scripts" / "zotero_agent_bridge.js").read_text(encoding="utf-8-sig"),
         ]
         for source in sources:
-            self.assertIn('case "create_assistant_note":', source)
+            command_switch = source.split("async function processCommand(request)", 1)[1].split(
+                "function validateRequest(request)", 1
+            )[0]
+            self.assertEqual(re.findall(r'case "([^"]+)"', command_switch), ["create_assistant_note"])
             self.assertIn("handleCreateAssistantNote(request)", source)
             self.assertIn("Assistant document_id must be a SHA-256 hex digest", source)
             self.assertIn("Assistant context_fingerprint must be a SHA-256 hex digest", source)
             self.assertIn("Assistant attachment_key is required", source)
+            for retired in (
+                "handleCreateItem",
+                "handleUpdateItem",
+                "handleAttachLinkedPdf",
+                "handleCreateNote",
+                "handleCreateCollection",
+                "handleUpdateCollection",
+            ):
+                self.assertNotIn(retired, source)
 
     def test_save_note_state_guards_run_in_node(self) -> None:
         script = f"""
