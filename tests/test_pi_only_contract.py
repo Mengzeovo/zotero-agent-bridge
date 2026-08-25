@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -157,6 +159,28 @@ class PiOnlyContractTest(unittest.TestCase):
                 model = self.routes[route_pair].response_model
                 self.assertIsNotNone(model)
                 self.assertEqual(model.__name__, model_name)
+
+    def test_retired_cli_and_scripts_are_explicit_nonzero_compatibility_shells(self) -> None:
+        for relative_path in self.policy["retired_scripts"]:
+            with self.subTest(path=relative_path):
+                path = ROOT / relative_path
+                self.assertTrue(path.is_file())
+                source = path.read_text(encoding="utf-8-sig")
+                self.assertTrue("feature_retired" in source or "retired_main" in source)
+        mcp_source = (ROOT / "zotero_agent_bridge" / "mcp_server.py").read_text(encoding="utf-8")
+        self.assertIn("retired_main", mcp_source)
+        self.assertNotIn("requests", mcp_source)
+        self.assertNotIn("build_server", mcp_source)
+        result = subprocess.run(
+            [sys.executable, "-m", "zotero_agent_bridge.mcp_server"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("feature_retired", result.stderr)
+        self.assertIn("built-in Pi literature assistant", result.stderr)
 
     def test_retired_addon_frontend_resources_are_absent(self) -> None:
         for relative_path in self.policy["retired_addon_resources"]:
