@@ -116,7 +116,7 @@ class Settings:
                 or config.get("addon_status_ttl_seconds")
                 or 15.0
             ),
-            user_agent=config.get("user_agent") or "ZoteroAgentBridge/0.1",
+            user_agent=config.get("user_agent") or "ZoteroPiAssistant/0.4.0-beta",
             base_attachment_path=Path(base_attachment) if base_attachment else None,
             pi=PiSettings(
                 executable=(

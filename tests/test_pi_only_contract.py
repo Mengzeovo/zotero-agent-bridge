@@ -22,6 +22,7 @@ from zotero_agent_bridge.models import (
     AssistantSaveNoteRequest,
 )
 from zotero_agent_bridge.service import BridgeService, create_app
+from zotero_agent_bridge.version import BRIDGE_VERSION, PRODUCT_NAME, PRODUCT_SCOPE
 from zotero_agent_bridge.zotero_local import ZoteroLocalClient
 
 
@@ -80,6 +81,21 @@ class PiOnlyContractTest(unittest.TestCase):
         cls.retained = policy_routes(cls.policy, "retained_http_routes")
         cls.retired = policy_routes(cls.policy, "retired_http_routes")
         cls.routes = application_routes()
+
+    def test_product_metadata_is_zotero_pi_assistant_040_beta(self) -> None:
+        manifest = json.loads((ROOT / "zotero_companion_addon" / "manifest.json").read_text(encoding="utf-8-sig"))
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        bootstrap = BOOTSTRAP_PATH.read_text(encoding="utf-8-sig")
+        self.assertEqual(PRODUCT_NAME, "Zotero Pi Assistant")
+        self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
+        self.assertEqual(BRIDGE_VERSION, "0.4.0-beta")
+        self.assertEqual(manifest["name"], PRODUCT_NAME)
+        self.assertEqual(manifest["version"], BRIDGE_VERSION)
+        self.assertEqual(manifest["applications"]["zotero"]["id"], "zotero-agent-bridge@local")
+        self.assertTrue(readme.startswith("# Zotero Pi Assistant"))
+        self.assertIn("**当前版本：0.4.0-beta**", readme)
+        self.assertNotIn("syncSelectedNoteToObsidian", bootstrap)
+        self.assertNotIn("Sync to Obsidian", bootstrap)
 
     def test_transition_policy_is_complete_disjoint_and_versioned(self) -> None:
         self.assertEqual(self.policy["schema_version"], 1)

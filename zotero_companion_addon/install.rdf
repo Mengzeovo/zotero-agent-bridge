@@ -3,11 +3,11 @@
      xmlns:em="http://www.mozilla.org/2004/em-rdf#">
   <Description about="urn:mozilla:install-manifest">
     <em:id>zotero-agent-bridge@local</em:id>
-    <em:name>Zotero Agent Bridge</em:name>
-    <em:version>0.3.5</em:version>
+    <em:name>Zotero Pi Assistant</em:name>
+    <em:version>0.4.0-beta</em:version>
     <em:type>2</em:type>
     <em:bootstrap>true</em:bootstrap>
-    <em:description>Companion add-on that executes bridge write commands inside Zotero.</em:description>
+    <em:description>Built-in Pi literature assistant for Zotero with managed private Bridge.</em:description>
     <em:updateURL>https://raw.githubusercontent.com/Mengzeovo/zotero-agent-bridge/main/updates.json</em:updateURL>
     <em:targetApplication>
       <Description>

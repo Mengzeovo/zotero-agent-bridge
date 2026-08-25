@@ -1,8 +1,8 @@
 ﻿{
   "manifest_version": 2,
-  "name": "Zotero Agent Bridge",
-  "version": "0.3.5",
-  "description": "Companion add-on that executes bridge write commands inside Zotero.",
+  "name": "Zotero Pi Assistant",
+  "version": "0.4.0-beta",
+  "description": "Built-in Pi literature assistant for Zotero with managed private Bridge.",
   "applications": {
     "zotero": {
       "id": "zotero-agent-bridge@local",

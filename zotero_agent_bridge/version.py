@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-BRIDGE_VERSION = "0.3.5"
+BRIDGE_VERSION = "0.4.0-beta"
 PRODUCT_NAME = "Zotero Pi Assistant"
 PRODUCT_SCOPE = "zotero-pi-only"
 LIFECYCLE_PROTOCOL_VERSION = 2

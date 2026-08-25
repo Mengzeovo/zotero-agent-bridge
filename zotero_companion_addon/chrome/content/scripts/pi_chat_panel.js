@@ -203,6 +203,10 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     return [text, imageLabel].filter(Boolean).join("\n");
   }
 
+  function questionSnapshotText(content) {
+    return contentText(content).trim();
+  }
+
   function imagePayloadFromDataURL(value, fallbackMimeType = "") {
     const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/u.exec(String(value || ""));
     if (!match) {
@@ -1249,7 +1253,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           this._addMessage(message.role, displayText);
         }
         if (message.role === "user") {
-          associatedQuestion = displayText.trim() || null;
+          associatedQuestion = questionSnapshotText(message.content) || null;
           finalAnswer = null;
           finalQuestion = null;
         } else if (isFinalAssistantMessage(message)) {
@@ -2056,6 +2060,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       documentsEqual,
       imagePayloadFromDataURL,
       isFinalAssistantMessage,
+      questionSnapshotText,
       scopesEqual,
       shouldSendOnKeydown,
     },
