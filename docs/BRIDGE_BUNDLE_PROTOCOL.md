@@ -122,16 +122,37 @@ bridge/windows-x64/
 ```json
 {
   "state_schema_version": 1,
-  "current_version": "0.3.0",
-  "last_known_good": "0.3.0",
+  "current_version": "0.4.0-beta",
+  "current_protocol_version": 2,
+  "current_product_scope": "zotero-pi-only",
+  "last_known_good": "0.4.0-beta",
+  "last_known_good_protocol_version": 2,
+  "last_known_good_product_scope": "zotero-pi-only",
   "pending_version": null,
+  "pending_protocol_version": null,
+  "pending_product_scope": null,
+  "protocol_floor": 2,
+  "pi_only_established_at": "<UTC ISO-8601>",
+  "legacy_baseline_confirmed_at": "<UTC ISO-8601 or null>",
+  "legacy_fallback_consumed": true,
+  "legacy_fallback_attempted_at": "<UTC ISO-8601 or null>",
+  "legacy_fallback_completed_at": "<UTC ISO-8601 or null>",
+  "legacy_fallback_version": "0.3.5",
+  "legacy_fallback_from": "0.4.0-beta",
   "updated_at": "<UTC ISO-8601>"
 }
 ```
 
-- `current_version`：当前 XPI 携带并选择的版本。
-- `pending_version`：已安装但尚未通过 `/lifecycle` 验证的版本。
-- `last_known_good`：至少成功启动并通过生命周期验证一次的兼容版本。
+- `current_*`：当前选择的版本、协议和产品范围。
+- `pending_*`：已安装但尚未通过 `/lifecycle` 验证的版本、协议和产品范围。
+- `last_known_good_*`：至少成功启动并通过生命周期验证一次的兼容 runtime。
+- `protocol_floor`：成功建立 Pi-only v2 后写为 `2`；低于该值的 bundle 不得回滚。
+- `pi_only_established_at`：首次成功启动 Pi-only v2 的时间。
+- `legacy_baseline_confirmed_at`：精确的 bundled `0.3.5` protocol v1 基线曾正常启动的时间；普通基线启动不会消费未来的紧急回退机会。
+- `legacy_fallback_consumed`：首次 v2 升级是否已选择过一次性 v1 紧急回退。
+- `legacy_fallback_attempted_at/version/from`：在启动 rollback 进程前原子写入，确保回退即使启动失败也不能再次选择。
+- `legacy_fallback_completed_at`：已预留的紧急回退成功达到 ready 状态的时间；失败时保持为空，但 `legacy_fallback_consumed` 仍为 true。
+- 旧 schema 1 状态文件缺少这些新增字段时按 `protocol_floor=0`、`legacy_fallback_consumed=false` 迁移，不改写用户会话或 Token。
 - 状态文件使用临时文件加原子替换写入。
 
 ## 生命周期兼容
@@ -183,10 +204,13 @@ Bridge Home 中写入 `bridge-runtime.json`：
 
 ## 回滚规则
 
-- 新版本安装后先标记为 `pending_version`。
-- 只有 `/lifecycle` 返回相同版本和兼容协议后，才能更新 `last_known_good`。
-- 新版本失败时可回退到具有有效哨兵且协议兼容的 `last_known_good`。
-- 回退必须在 UI 和日志中明确显示，不能静默长期运行旧版本。
+- 新版本安装后先写入 `pending_version`、`pending_protocol_version` 和 `pending_product_scope`。
+- 只有 `/lifecycle` 返回相同版本、协议和 product scope 后，才能更新 `last_known_good_*`。
+- 第一次从 v1 升级到 v2 时，如果 v2 启动失败且尚未建立 protocol floor，只能回退一次到精确版本 `0.3.5`、具有有效旧 manifest、哨兵和文件哈希的 v1 `last_known_good`。
+- 一次性 v1 回退成功后必须写入 `legacy_fallback_consumed=true`，不能在后续失败中反复选择旧 broad Bridge。
+- Pi-only v2 成功后写入 `protocol_floor=2` 和 `pi_only_established_at`；此后所有 protocol v1 rollback candidate 都必须被拒绝。
+- v2 到 v2 的回滚仍可使用，但候选必须具有有效 manifest、`product_scope=zotero-pi-only`、哨兵和文件哈希。
+- 回退必须在 UI、状态和日志中明确显示，不能静默长期运行旧版本。
 
 ## 安全拒绝条件
 

@@ -85,6 +85,20 @@ class BundlePackagingTest(unittest.TestCase):
                 payload = archive.read(f"bridge/windows-x64/{record['path']}")
                 self.assertEqual(len(payload), record["size"])
                 self.assertEqual(hashlib.sha256(payload).hexdigest(), record["sha256"])
+        script = r"""
+const manager = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
+const manifest = JSON.parse(process.argv[1]);
+const accepted = manager.validateBundledManifest(manifest, '0.3.5');
+if (accepted.protocol_version !== 1 || accepted.bridge_version !== '0.3.5') process.exitCode = 1;
+"""
+        result = subprocess.run(
+            ["node", "-e", script, json.dumps(manifest)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
 
     def test_xpi_builder_rejects_tampered_bundle(self) -> None:
         builder = load_script("zab_build_xpi_test", "packaging/build_xpi.py")
@@ -123,12 +137,65 @@ const path = require('path');
 const bundle = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
 const config = require('./zotero_companion_addon/chrome/content/scripts/bridge_config_manager.js').__test;
 const manifest = {
-  bundle_schema_version: 1, bridge_version: '0.3.5', protocol_version: 2,
+  bundle_schema_version: 1, bridge_version: '0.4.0-beta', protocol_version: 2,
   product_scope: 'zotero-pi-only', distribution: 'xpi-bundled', platform: 'windows', architecture: 'x64',
   entrypoint: 'zab-bridge/zab-bridge.exe', sentinel: '.zab-bundle-installed.json',
   files: [{path:'zab-bridge/zab-bridge.exe',size:1,sha256:'a'.repeat(64)}]
 };
-assert.strictEqual(bundle.validateManifest(manifest).bridge_version, '0.3.5');
+assert.strictEqual(bundle.validateManifest(manifest).bridge_version, '0.4.0-beta');
+const legacyManifest = {
+  ...manifest,
+  bridge_version: '0.3.5',
+  protocol_version: 1,
+};
+delete legacyManifest.product_scope;
+assert.strictEqual(bundle.validateLegacyManifest(legacyManifest).protocol_version, 1);
+assert.strictEqual(bundle.validateBundledManifest(legacyManifest, '0.3.5').protocol_version, 1);
+assert.throws(() => bundle.validateBundledManifest({...legacyManifest, bridge_version:'0.4.0-beta'}, '0.4.0-beta'));
+assert.throws(() => bundle.validateManifest(legacyManifest));
+const arbitraryV1 = {...legacyManifest, bridge_version:'0.3.4'};
+assert.strictEqual(bundle.rollbackDecision({}, arbitraryV1, manifest).reason, 'legacy_baseline_version');
+const baselineState = bundle.nextSuccessfulInstallState({}, legacyManifest, {
+  timestamp: '2026-08-24T00:00:00.000Z',
+});
+assert.strictEqual(baselineState.current_version, '0.3.5');
+assert.strictEqual(baselineState.last_known_good_protocol_version, 1);
+assert.strictEqual(baselineState.protocol_floor, 0);
+assert.strictEqual(baselineState.legacy_fallback_consumed, false);
+assert.strictEqual(baselineState.legacy_baseline_confirmed_at, '2026-08-24T00:00:00.000Z');
+const firstDecision = bundle.rollbackDecision(baselineState, legacyManifest, manifest);
+assert.deepStrictEqual(firstDecision, {
+  allowed: true,
+  emergencyLegacyFallback: true,
+  reason: 'first_v2_upgrade',
+});
+const reservedState = bundle.reserveLegacyFallbackState(baselineState, legacyManifest, manifest, {
+  timestamp: '2026-08-25T00:00:00.000Z',
+});
+assert.strictEqual(reservedState.legacy_fallback_consumed, true);
+assert.strictEqual(reservedState.legacy_fallback_version, '0.3.5');
+assert.strictEqual(reservedState.legacy_fallback_from, '0.4.0-beta');
+assert.strictEqual(reservedState.legacy_fallback_completed_at, null);
+assert.strictEqual(bundle.rollbackDecision(reservedState, legacyManifest, manifest).allowed, false);
+const fallbackState = bundle.nextSuccessfulInstallState(reservedState, legacyManifest, {
+  emergencyLegacyFallback: true,
+  timestamp: '2026-08-25T00:00:00.500Z',
+});
+assert.strictEqual(fallbackState.protocol_floor, 0);
+assert.strictEqual(fallbackState.legacy_fallback_consumed, true);
+assert.strictEqual(fallbackState.legacy_fallback_completed_at, '2026-08-25T00:00:00.500Z');
+const piOnlyState = bundle.nextSuccessfulInstallState(baselineState, manifest, {
+  timestamp: '2026-08-25T00:00:01.000Z',
+});
+assert.strictEqual(piOnlyState.protocol_floor, 2);
+assert.strictEqual(piOnlyState.pi_only_established_at, '2026-08-25T00:00:01.000Z');
+assert.strictEqual(piOnlyState.last_known_good_protocol_version, 2);
+assert.strictEqual(piOnlyState.last_known_good_product_scope, 'zotero-pi-only');
+assert.strictEqual(bundle.rollbackDecision(piOnlyState, legacyManifest, manifest).reason, 'protocol_floor');
+assert.throws(
+  () => bundle.nextSuccessfulInstallState(piOnlyState, legacyManifest, {emergencyLegacyFallback: true}),
+  (error) => error.code === 'bundle_legacy_fallback_blocked',
+);
 assert.throws(() => bundle.normalizeManifestPath('../escape'));
 const P = {
   isAbsolute:path.win32.isAbsolute,
