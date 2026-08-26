@@ -58,11 +58,11 @@ The transition does not delete:
 
 Obsolete user data may be documented for manual archival/removal but is never deleted as an incidental upgrade action.
 
-## Release 2: `0.4.1-beta` final removal
+## Release 2: `0.4.1-beta` implementation removal
 
-`0.4.0-beta` passed automated and real-Zotero upgrade acceptance. `0.4.1-beta` therefore completes the second-stage removal:
+`0.4.0-beta` passed automated and real-Zotero upgrade acceptance. `0.4.1-beta` therefore removes the retired implementations while retaining explicit HTTP tombstones:
 
-- 410 transition routes are unregistered and return 404;
+- retired routes remain Bridge-token-authenticated, perform no side effects, and return `410 feature_retired`;
 - MCP, Obsidian, mirror, DOI import, classification, and collection-tree implementations are physically deleted;
 - retired console entry points and scripts are deleted;
 - retired add-on queue handlers and the unused legacy add-on script are deleted;
@@ -114,6 +114,6 @@ The emergency fallback protected the first `0.4.0-beta` upgrade only. Its implem
 `0.4.1-beta` is ready only when:
 
 - the transition release has passed real usage acceptance;
-- no removed module, script, route, Obsidian resource, MCP entry point, or old launcher is present in the release archive;
+- no removed implementation module, script, Obsidian resource, MCP entry point, or old launcher is present in the release archive; retired HTTP routes contain only authenticated `410 feature_retired` tombstones;
 - all frozen Pi capabilities pass again;
 - pre-v2 runtime rollback is rejected without affecting Pi sessions or Tokens.

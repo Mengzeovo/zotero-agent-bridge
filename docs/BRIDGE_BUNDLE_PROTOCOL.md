@@ -32,7 +32,7 @@ bridge/windows-x64/
 ```json
 {
   "bundle_schema_version": 1,
-  "bridge_version": "0.4.1-beta",
+  "bridge_version": "0.4.2-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
@@ -106,7 +106,7 @@ bridge/windows-x64/
 ```json
 {
   "sentinel_schema_version": 1,
-  "bridge_version": "0.4.1-beta",
+  "bridge_version": "0.4.2-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "manifest_sha256": "<sha256 of canonical manifest bytes>",
@@ -122,10 +122,10 @@ bridge/windows-x64/
 ```json
 {
   "state_schema_version": 1,
-  "current_version": "0.4.1-beta",
+  "current_version": "0.4.2-beta",
   "current_protocol_version": 2,
   "current_product_scope": "zotero-pi-only",
-  "last_known_good": "0.4.1-beta",
+  "last_known_good": "0.4.2-beta",
   "last_known_good_protocol_version": 2,
   "last_known_good_product_scope": "zotero-pi-only",
   "pending_version": null,
@@ -156,7 +156,7 @@ Bridge `/lifecycle` 必须返回：
   "pid": 1234,
   "started_at": "...",
   "exit_with_addon": true,
-  "bridge_version": "0.4.1-beta",
+  "bridge_version": "0.4.2-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled"
@@ -179,7 +179,7 @@ Bridge Home 中写入 `bridge-runtime.json`：
 ```json
 {
   "runtime_schema_version": 1,
-  "bridge_version": "0.4.1-beta",
+  "bridge_version": "0.4.2-beta",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
