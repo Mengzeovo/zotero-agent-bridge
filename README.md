@@ -1,5 +1,7 @@
 # Zotero Pi Assistant
 
+**简体中文** | [English](README.en.md)
+
 **当前版本：0.4.2** · **支持 Zotero 7–9（推荐 Zotero 9）** · **当前发行平台：Windows x64**
 
 Zotero Pi Assistant 是一个嵌入 Zotero 的本地文献阅读助手。它把当前论文的 PDF、书目信息、Zotero 笔记与批注组织成结构化上下文，交给 Pi CLI 完成问答，并将会话和整理结果保存到本地。
