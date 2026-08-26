@@ -510,6 +510,26 @@ class PiChatManagerTest(unittest.TestCase):
         self.assertEqual(Path(listing["sessions"][1]["session_file"]), new_session)
         self.assertFalse(listing["sessions"][1]["current"])
 
+    def test_item_session_sources_span_documents_and_isolate_libraries(self) -> None:
+        manager = self.manager()
+        first = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
+        first_path = Path(first["session_file"])
+        second = manager.open_item(ITEM_A, self.pdf_same_dir, library_id=7)
+        second_path = Path(second["session_file"])
+        other_library = manager.open_item(ITEM_A, self.pdf_b, library_id=8)
+        other_path = Path(other_library["session_file"])
+
+        sources = manager.list_item_session_sources(ITEM_A, library_id=7)
+        paths = {Path(entry["session_file"]) for entry in sources}
+        self.assertEqual(paths, {first_path, second_path})
+        self.assertTrue(all(entry["document_id"] in {first["document_id"], second["document_id"]} for entry in sources))
+        self.assertNotIn(other_path, paths)
+
+        first_path.unlink()
+        sources = manager.list_item_session_sources(ITEM_A, library_id=7)
+        missing = next(entry for entry in sources if Path(entry["session_file"]) == first_path)
+        self.assertFalse(missing["available"])
+
     def test_resume_session_rejects_unknown_and_escaping_handles(self) -> None:
         manager = self.manager()
         first = manager.open_item(ITEM_A, self.pdf_a, library_id=7)
@@ -859,7 +879,7 @@ class PiChatManagerTest(unittest.TestCase):
         self.prompt_path.write_text("Assistant & echo PWN | <input> ^caret %PATH% !bang!", encoding="utf-8")
         manager = PiChatManager(self.settings)
         self.managers.append(manager)
-        with patch("zotero_agent_bridge.pi_chat.platform.system", return_value="Windows"):
+        with patch("zotero_agent_bridge.pi_runtime.platform.system", return_value="Windows"):
             command = manager._build_command(item_key=ITEM_A, document_id="a" * 64, session_file=None)
         self.assertEqual(Path(command[0]), node.resolve())
         self.assertEqual(Path(command[1]), cli.resolve())
@@ -870,7 +890,7 @@ class PiChatManagerTest(unittest.TestCase):
         self.settings.pi.executable = "definitely-missing-pi-command"
         manager = PiChatManager(self.settings)
         self.managers.append(manager)
-        with patch("zotero_agent_bridge.pi_chat.shutil.which", return_value=None):
+        with patch("zotero_agent_bridge.pi_runtime.shutil.which", return_value=None):
             status = manager.executable_status()
             self.assertFalse(status["available"])
             self.assertEqual(status["error"]["code"], "pi_executable_not_found")
@@ -911,8 +931,8 @@ class PiChatManagerTest(unittest.TestCase):
         process = FakeProcess()
         completed = subprocess.CompletedProcess(["taskkill"], 1)
         with (
-            patch("zotero_agent_bridge.pi_chat.platform.system", return_value="Windows"),
-            patch("zotero_agent_bridge.pi_chat.subprocess.run", return_value=completed),
+            patch("zotero_agent_bridge.pi_runtime.platform.system", return_value="Windows"),
+            patch("zotero_agent_bridge.pi_runtime.subprocess.run", return_value=completed),
         ):
             manager._terminate_process_tree(process)
         self.assertTrue(process.killed)

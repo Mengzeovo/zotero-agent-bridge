@@ -3,11 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 import queue
 import re
-import shutil
-import signal
 import subprocess
 import threading
 import time
@@ -19,6 +16,7 @@ from typing import Any, Callable, IO
 from .config import Settings
 from .errors import BridgeError
 from .models import PI_THINKING_LEVELS
+from .pi_runtime import popen_process_group_kwargs, resolve_pi_executable, terminate_process_tree
 from .utils import atomic_write_json, ensure_dir, now_iso, read_json
 
 
@@ -351,6 +349,78 @@ class PiChatManager:
         for orphan in self._iter_orphan_session_files(item_key, document_id, known):
             sessions.append(self._orphan_listing_entry(orphan))
         return {"document_id": document_id, "sessions": sessions}
+
+    def list_item_session_sources(
+        self,
+        item_key: str,
+        *,
+        library_id: str | int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List every known session file for one Zotero parent item across PDF documents."""
+        item_key = self._validate_item_key(item_key)
+        normalized_library_id = self._normalize_library_id(library_id)
+        session_identity = f"{normalized_library_id}:{item_key}" if normalized_library_id else item_key
+        index = self._load_index()
+        sources: list[dict[str, Any]] = []
+        known_paths: set[str] = set()
+
+        for document_id, candidate in index["sessions"].items():
+            if not isinstance(candidate, dict):
+                continue
+            record_identity = str(candidate.get("session_identity") or "")
+            raw_record_library = candidate.get("library_id")
+            record_library = str(raw_record_library).strip() if raw_record_library is not None else None
+            record_library = record_library or None
+            legacy_match = (
+                candidate.get("item_key") == item_key
+                and record_library == normalized_library_id
+            )
+            if record_identity != session_identity and not legacy_match:
+                continue
+
+            record_entries: list[dict[str, Any]] = []
+            current_file = candidate.get("session_file")
+            if isinstance(current_file, str) and current_file:
+                record_entries.append(self._session_listing_entry(current_file, candidate, current=True))
+            for history_entry in self._record_history(candidate):
+                session_file = history_entry.get("session_file")
+                if isinstance(session_file, str) and session_file:
+                    record_entries.append(
+                        self._session_listing_entry(
+                            session_file,
+                            candidate,
+                            current=False,
+                            history_entry=history_entry,
+                        )
+                    )
+
+            document_known: set[str] = set()
+            for entry in record_entries:
+                session_file = entry.get("session_file")
+                if not isinstance(session_file, str):
+                    continue
+                canonical = self._canonical_path(session_file)
+                document_known.add(canonical)
+                if canonical in known_paths:
+                    continue
+                known_paths.add(canonical)
+                sources.append({**entry, "document_id": str(document_id), "orphan": False})
+
+            for orphan in self._iter_orphan_session_files(item_key, str(document_id), document_known):
+                entry = self._orphan_listing_entry(orphan)
+                canonical = self._canonical_path(entry["session_file"])
+                if canonical in known_paths:
+                    continue
+                known_paths.add(canonical)
+                sources.append({**entry, "document_id": str(document_id)})
+
+        sources.sort(
+            key=lambda entry: (
+                str(entry.get("updated_at") or entry.get("archived_at") or ""),
+                str(entry.get("session_file") or ""),
+            )
+        )
+        return sources
 
     def resume_session(
         self,
@@ -981,62 +1051,7 @@ class PiChatManager:
             }
 
     def _resolve_executable_command(self) -> list[str]:
-        if self.executable_command:
-            return list(self.executable_command)
-
-        configured = self.pi.executable
-        resolved_name = shutil.which(configured)
-        executable = Path(resolved_name or configured).expanduser()
-        if not resolved_name:
-            if not executable.is_absolute() or not executable.is_file():
-                raise BridgeError(
-                    503,
-                    "pi_executable_not_found",
-                    "Pi CLI was not found. Install Pi or configure an absolute executable path.",
-                    {"configured": configured, "searched_path": os.environ.get("PATH", "")},
-                )
-        if platform.system() != "Windows" or executable.suffix.lower() not in {".cmd", ".bat"}:
-            return [str(executable.resolve())]
-        if executable.suffix.lower() != ".cmd" or not executable.is_file():
-            raise BridgeError(
-                503,
-                "pi_executable_unsupported",
-                "Windows Pi launcher must be a standard npm .cmd shim or a direct executable",
-                {"executable": str(executable)},
-            )
-
-        text = executable.read_text(encoding="utf-8", errors="replace")
-        match = re.search(r'%dp0%[\\/](?P<target>[^"\r\n]+?\.js)"\s+%\*', text, flags=re.IGNORECASE)
-        if not match:
-            raise BridgeError(
-                503,
-                "pi_executable_unsupported",
-                "Could not safely resolve the Node CLI target from the Pi npm launcher",
-                {"executable": str(executable)},
-            )
-        shim_root = executable.parent.resolve()
-        target = (shim_root / Path(match.group("target").replace("\\", os.sep))).resolve()
-        try:
-            target.relative_to(shim_root)
-        except ValueError as exc:
-            raise BridgeError(
-                503,
-                "pi_executable_unsupported",
-                "Resolved Pi Node CLI target escapes the npm launcher directory",
-                {"target": str(target)},
-            ) from exc
-        if not target.is_file():
-            raise BridgeError(
-                503,
-                "pi_executable_unsupported",
-                "Resolved Pi Node CLI target does not exist",
-                {"target": str(target)},
-            )
-        sibling_node = executable.parent / "node.exe"
-        node = sibling_node if sibling_node.is_file() else Path(shutil.which("node") or "")
-        if not node or not node.is_file():
-            raise BridgeError(503, "pi_executable_unsupported", "Node.js executable was not found")
-        return [str(node.resolve()), str(target)]
+        return resolve_pi_executable(self.pi.executable, self.executable_command)
 
     def _start_locked(
         self,
@@ -1058,10 +1073,7 @@ class PiChatManager:
             "shell": False,
             "bufsize": 0,
         }
-        if platform.system() == "Windows":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        else:
-            kwargs["start_new_session"] = True
+        kwargs.update(popen_process_group_kwargs())
         try:
             process = self.popen_factory(command, **kwargs)
         except (OSError, ValueError) as exc:
@@ -1405,47 +1417,4 @@ class PiChatManager:
         self._stderr_thread = None
 
     def _terminate_process_tree(self, process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is not None:
-            return
-        if platform.system() == "Windows":
-            try:
-                process.send_signal(signal.CTRL_BREAK_EVENT)
-                process.wait(timeout=1.0)
-                return
-            except (OSError, ValueError, subprocess.TimeoutExpired):
-                pass
-            taskkill_succeeded = False
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5,
-                )
-                taskkill_succeeded = result.returncode == 0
-            except (OSError, subprocess.TimeoutExpired):
-                taskkill_succeeded = False
-            if taskkill_succeeded:
-                try:
-                    process.wait(timeout=2.0)
-                    return
-                except subprocess.TimeoutExpired:
-                    pass
-            if process.poll() is None:
-                process.kill()
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=1.0)
-                return
-            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-                pass
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                process.kill()
-        try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        terminate_process_tree(process)
