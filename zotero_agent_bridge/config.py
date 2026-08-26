@@ -39,6 +39,16 @@ class PiSettings:
     idle_timeout_seconds: float = 1800.0
     max_context_chars: int = 500_000
     poll_interval_ms: int = 300
+    note_title_timeout_seconds: float = 20.0
+    experience_timeout_enabled: bool = False
+    experience_call_timeout_seconds: float = 600.0
+    experience_total_timeout_seconds: float = 900.0
+    experience_chunk_chars: int = 100_000
+    experience_extraction_chunk_chars: int = 100_000
+    experience_structure_max_chars: int = 250_000
+    experience_cross_link_max_calls: int = 8
+    experience_coverage_audit: bool = True
+    experience_json_repair_attempts: int = 1
 
     def validate(self) -> None:
         if self.cwd_mode != "selected_pdf_directory":
@@ -51,6 +61,22 @@ class PiSettings:
             raise ValueError("Pi max_context_chars must be positive")
         if self.poll_interval_ms < 100:
             raise ValueError("Pi poll_interval_ms must be at least 100")
+        if self.note_title_timeout_seconds <= 0:
+            raise ValueError("Pi note_title_timeout_seconds must be positive")
+        if self.experience_call_timeout_seconds <= 0:
+            raise ValueError("Pi experience_call_timeout_seconds must be positive")
+        if self.experience_total_timeout_seconds < self.experience_call_timeout_seconds:
+            raise ValueError("Pi experience_total_timeout_seconds must cover at least one generation call")
+        if self.experience_chunk_chars < 10_000:
+            raise ValueError("Pi experience_chunk_chars must be at least 10000")
+        if self.experience_extraction_chunk_chars < 10_000:
+            raise ValueError("Pi experience_extraction_chunk_chars must be at least 10000")
+        if self.experience_structure_max_chars < 10_000:
+            raise ValueError("Pi experience_structure_max_chars must be at least 10000")
+        if not 0 <= self.experience_cross_link_max_calls <= 64:
+            raise ValueError("Pi experience_cross_link_max_calls must be between 0 and 64")
+        if self.experience_json_repair_attempts not in {0, 1}:
+            raise ValueError("Pi experience_json_repair_attempts must be 0 or 1")
 
 
 @dataclass(slots=True)
@@ -116,7 +142,7 @@ class Settings:
                 or config.get("addon_status_ttl_seconds")
                 or 15.0
             ),
-            user_agent=config.get("user_agent") or "ZoteroPiAssistant/0.4.1-beta",
+            user_agent=config.get("user_agent") or "ZoteroPiAssistant/0.4.2-beta",
             base_attachment_path=Path(base_attachment) if base_attachment else None,
             pi=PiSettings(
                 executable=(
@@ -154,6 +180,57 @@ class Settings:
                     os.environ.get("ZOTERO_AGENT_BRIDGE_PI_POLL_INTERVAL_MS")
                     or pi_config.get("poll_interval_ms")
                     or 300
+                ),
+                note_title_timeout_seconds=float(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_NOTE_TITLE_TIMEOUT")
+                    or pi_config.get("note_title_timeout_seconds")
+                    or 20.0
+                ),
+                experience_timeout_enabled=str(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_TIMEOUT_ENABLED")
+                    if os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_TIMEOUT_ENABLED") is not None
+                    else pi_config.get("experience_timeout_enabled", False)
+                ).strip().lower() in {"1", "true", "yes", "on"},
+                experience_call_timeout_seconds=float(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_CALL_TIMEOUT")
+                    or pi_config.get("experience_call_timeout_seconds")
+                    or 600.0
+                ),
+                experience_total_timeout_seconds=float(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_TOTAL_TIMEOUT")
+                    or pi_config.get("experience_total_timeout_seconds")
+                    or 900.0
+                ),
+                experience_chunk_chars=int(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_CHUNK_CHARS")
+                    or pi_config.get("experience_chunk_chars")
+                    or 100_000
+                ),
+                experience_extraction_chunk_chars=int(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_EXTRACTION_CHUNK_CHARS")
+                    or pi_config.get("experience_extraction_chunk_chars")
+                    or pi_config.get("experience_chunk_chars")
+                    or 100_000
+                ),
+                experience_structure_max_chars=int(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_STRUCTURE_MAX_CHARS")
+                    or pi_config.get("experience_structure_max_chars")
+                    or 250_000
+                ),
+                experience_cross_link_max_calls=int(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_CROSS_LINK_MAX_CALLS")
+                    if os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_CROSS_LINK_MAX_CALLS") is not None
+                    else pi_config.get("experience_cross_link_max_calls", 8)
+                ),
+                experience_coverage_audit=str(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_COVERAGE_AUDIT")
+                    if os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_COVERAGE_AUDIT") is not None
+                    else pi_config.get("experience_coverage_audit", True)
+                ).strip().lower() not in {"0", "false", "no", "off"},
+                experience_json_repair_attempts=int(
+                    os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_JSON_REPAIR_ATTEMPTS")
+                    if os.environ.get("ZOTERO_AGENT_BRIDGE_PI_EXPERIENCE_JSON_REPAIR_ATTEMPTS") is not None
+                    else pi_config.get("experience_json_repair_attempts", 1)
                 ),
             ),
             lifecycle_owner_id=(

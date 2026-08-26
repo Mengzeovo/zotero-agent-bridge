@@ -146,3 +146,43 @@ class AssistantSaveNoteResponse(BaseModel):
     sync_status: str
     version: int | None = None
     title: str | None = None
+    note_title: str | None = None
+    title_source: Literal["ai", "request", "fallback"] | None = None
+
+
+class AssistantExperienceNoteUpdateRequest(BaseModel):
+    item_key: str = Field(min_length=1, max_length=64)
+    attachment_key: str = Field(min_length=1, max_length=64)
+    context_fingerprint: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    document_id: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    force_rebuild: bool = False
+
+
+class AssistantExperienceNoteJobAccepted(BaseModel):
+    job_id: str
+    status: Literal["queued", "collecting", "generating", "writing", "completed", "failed"]
+    poll_interval_ms: int = 1000
+
+
+class AssistantExperienceNoteJobStatus(BaseModel):
+    job_id: str
+    status: Literal["queued", "collecting", "generating", "writing", "completed", "failed"]
+    stage: str | None = None
+    session_count: int = 0
+    exchange_count: int = 0
+    skipped_session_count: int = 0
+    new_exchange_count: int = 0
+    reused_exchange_count: int = 0
+    knowledge_unit_count: int = 0
+    new_knowledge_unit_count: int = 0
+    updated_knowledge_unit_count: int = 0
+    relation_count: int = 0
+    missing_source_knowledge_count: int = 0
+    ai_call_count: int = 0
+    update_mode: Literal["initial_build", "incremental", "up_to_date", "migration", "full_rebuild"] | None = None
+    warnings: list[str] = Field(default_factory=list)
+    note_key: str | None = None
+    created: bool | None = None
+    version: int | None = None
+    error: dict[str, Any] | None = None
+    poll_interval_ms: int = 1000

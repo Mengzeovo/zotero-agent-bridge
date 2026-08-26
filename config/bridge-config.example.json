@@ -11,7 +11,7 @@
   "addon_status_ttl_seconds": 15.0,
   "lifecycle_addon_exit_grace_seconds": 30.0,
   "lifecycle_watchdog_interval_seconds": 1.0,
-  "user_agent": "ZoteroPiAssistant/0.4.1-beta",
+  "user_agent": "ZoteroPiAssistant/0.4.2-beta",
   "pi": {
     "executable": "C:/Users/<YOUR_USER>/AppData/Roaming/npm/pi.cmd",
     "session_dir": "C:/Users/<YOUR_USER>/Zotero/zotero-agent-bridge/pi-sessions",
@@ -21,6 +21,16 @@
     "thinking_level": "medium",
     "idle_timeout_seconds": 1800,
     "max_context_chars": 500000,
-    "poll_interval_ms": 300
+    "poll_interval_ms": 300,
+    "note_title_timeout_seconds": 20,
+    "experience_timeout_enabled": false,
+    "experience_call_timeout_seconds": 600,
+    "experience_total_timeout_seconds": 900,
+    "experience_chunk_chars": 100000,
+    "experience_extraction_chunk_chars": 100000,
+    "experience_structure_max_chars": 250000,
+    "experience_cross_link_max_calls": 8,
+    "experience_coverage_audit": true,
+    "experience_json_repair_attempts": 1
   }
 }
