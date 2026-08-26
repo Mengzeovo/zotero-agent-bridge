@@ -68,11 +68,25 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       resumeConfirm: "切换到所选历史会话？当前对话会保留在历史列表中。",
       resumeDone: "已切换到所选会话",
       resumeFailed: "切换历史会话失败",
-      save: "保存为 Zotero Note",
-      savePending: "等待一条完整的 Pi 回答后即可保存",
-      saveConfirm: "将当前完整回答保存为这篇文献的 Zotero Note？",
-      saveSuccess: "已保存 Zotero Note：{noteKey}",
-      saveFailed: "保存 Zotero Note 失败",
+      save: "保存问答",
+      savePending: "等待一条完整的 Pi 回答后即可保存问答",
+      saveConfirm: "将当前完整问答保存为这篇文献的 Zotero Note？",
+      saveSuccess: "已保存问答：{noteKey}",
+      saveFailed: "保存问答失败",
+      experience: "更新经验笔记",
+      experiencePending: "打开会话并等待回答完成后即可更新经验笔记",
+      experienceConfirm: "将整理该论文新增的学习成果、构建知识联系，并完整重建经验笔记结构。是否继续？",
+      experienceQueued: "正在准备知识整理任务…",
+      experienceCollecting: "正在读取会话与知识账本…",
+      experienceExtracting: "正在提取新增学习成果…",
+      experienceReconciling: "正在合并知识单元…",
+      experienceLinking: "正在构建知识联系…",
+      experienceRendering: "正在重建经验笔记结构…",
+      experienceGenerating: "正在整理学习成果…",
+      experienceWriting: "正在更新 Zotero 经验笔记…",
+      experienceUpToDate: "没有新的学习内容，经验笔记已同步",
+      experienceSuccess: "已更新经验笔记：{noteKey}（新增 {newExchanges} 组问答，复用 {reusedExchanges} 组，整理 {knowledgeUnits} 个知识点，保留 {missingKnowledge} 个来源不可用知识）",
+      experienceFailed: "更新经验笔记失败",
       empty: "从当前论文开始提问。回答将优先依据 PDF、笔记和批注。",
       user: "你",
       assistant: "Pi",
@@ -134,11 +148,25 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       resumeConfirm: "Switch to this past session? The current conversation stays in the history list.",
       resumeDone: "Switched to the selected session",
       resumeFailed: "Could not switch sessions",
-      save: "Save as Zotero Note",
-      savePending: "A complete Pi answer is required before saving",
-      saveConfirm: "Save the current complete answer as a Zotero Note for this paper?",
-      saveSuccess: "Saved Zotero Note: {noteKey}",
-      saveFailed: "Could not save the Zotero Note",
+      save: "Save Q&A",
+      savePending: "A complete Pi answer is required before saving the Q&A",
+      saveConfirm: "Save the current complete Q&A as a Zotero Note for this paper?",
+      saveSuccess: "Saved Q&A: {noteKey}",
+      saveFailed: "Could not save the Q&A",
+      experience: "Update Experience Note",
+      experiencePending: "Open the session and wait for generation to finish before updating the experience note",
+      experienceConfirm: "Organize new learning outcomes, build knowledge connections, and rebuild this paper's experience note structure?",
+      experienceQueued: "Preparing the knowledge organization job…",
+      experienceCollecting: "Reading sessions and the knowledge ledger…",
+      experienceExtracting: "Extracting new learning outcomes…",
+      experienceReconciling: "Reconciling knowledge units…",
+      experienceLinking: "Building knowledge connections…",
+      experienceRendering: "Rebuilding the experience note structure…",
+      experienceGenerating: "Organizing learning outcomes…",
+      experienceWriting: "Updating the Zotero experience note…",
+      experienceUpToDate: "No new learning content; the experience note is synchronized",
+      experienceSuccess: "Updated experience note: {noteKey} ({newExchanges} new Q&A, {reusedExchanges} reused, {knowledgeUnits} knowledge units, {missingKnowledge} retained with unavailable sources)",
+      experienceFailed: "Could not update the experience note",
       empty: "Ask about the current paper. Answers prioritize its PDF, notes, and annotations.",
       user: "You",
       assistant: "Pi",
@@ -318,6 +346,11 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.lastFinalQuestion = null;
       this.lastFinalScope = null;
       this.lastFinalDocument = null;
+      this.savingQuestionAnswer = false;
+      this.experienceSubmitting = false;
+      this.experienceJobId = null;
+      this.experienceJobScope = null;
+      this.experiencePollTimer = null;
       this.lastErrorMessage = null;
       this.lastErrorContent = null;
       this.disposed = false;
@@ -400,24 +433,56 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       const secondaryActions = createElement(doc, "div", "zab-chat__actions-secondary");
       this.historyButton = this._button(this.strings.history, "zab-chat__button zab-chat__button--quiet", () => void this.toggleHistory());
       this.resetButton = this._button(this.strings.reset, "zab-chat__button zab-chat__button--quiet", () => this.reset());
-      this.saveButton = this._button(this.strings.save, "zab-chat__button zab-chat__button--quiet", () => this.save());
+      this.saveButton = this._button(this.strings.save, "zab-chat__button zab-chat__button--quiet", () => this.saveQuestionAnswer());
       this.saveButton.disabled = true;
       this.saveButton.title = this.strings.savePending;
-      secondaryActions.append(this.historyButton, this.resetButton, this.saveButton);
+      this.experienceButton = this._button(
+        this.strings.experience,
+        "zab-chat__button zab-chat__button--quiet",
+        () => this.updateExperienceNote(),
+      );
+      this.experienceButton.disabled = true;
+      this.experienceButton.title = this.strings.experiencePending;
+      secondaryActions.append(this.historyButton, this.resetButton, this.saveButton, this.experienceButton);
 
       this.historyPopover = createElement(doc, "div", "zab-chat__history-popover");
       this.historyPopover.hidden = true;
       this._historyDismissHandler = (event) => {
-        if (this.historyPopover.hidden) {
+        if (!this.historyPopover || this.historyPopover.hidden) {
           return;
         }
-        const path = typeof event.composedPath === "function" ? event.composedPath() : [];
-        if (path.includes(this.historyPopover) || path.includes(this.historyButton)) {
+        if (event && event.type === "keydown") {
+          if (event.key === "Escape") {
+            this._hideHistory();
+          }
+          return;
+        }
+        if (event && typeof event.composedPath === "function") {
+          const path = event.composedPath();
+          if (path.includes(this.historyPopover) || path.includes(this.historyButton)) {
+            return;
+          }
+        } else if (
+          event && event.target
+          && (this.historyPopover.contains(event.target) || this.historyButton.contains(event.target))
+        ) {
           return;
         }
         this._hideHistory();
       };
-      this.doc.addEventListener("click", this._historyDismissHandler, true);
+      this._historyDismissTargets = [];
+      const topWin = this.win && this.win.top && this.win.top !== this.win ? this.win.top : null;
+      const dismissDocs = new Set([this.doc, topWin && topWin.document].filter(Boolean));
+      for (const dismissDoc of dismissDocs) {
+        for (const eventName of ["mousedown", "click", "keydown"]) {
+          dismissDoc.addEventListener(eventName, this._historyDismissHandler, true);
+          this._historyDismissTargets.push([dismissDoc, eventName]);
+        }
+      }
+      for (const dismissWin of new Set([this.win, topWin].filter(Boolean))) {
+        dismissWin.addEventListener("blur", this._historyDismissHandler, true);
+        this._historyDismissTargets.push([dismissWin, "blur"]);
+      }
       actionRow.append(primaryActions, secondaryActions, this.historyPopover);
 
       this.root.append(
@@ -498,8 +563,13 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         this.historyPopover.append(createElement(doc, "div", "zab-chat__history-empty", this.strings.historyEmpty));
       }
       for (const session of sessions) {
-        const item = createElement(doc, "button", "zab-chat__history-item");
-        item.type = "button";
+        // NOTE: a <div role="button"> is used instead of <button> on purpose:
+        // in Zotero's XUL chrome document an HTML <button>'s auto height is
+        // forced to the native widget height (28px on Windows) regardless of
+        // content, so the preview+meta rows overflow the item box and paint
+        // over the next entry. A block-level div sizes to its content.
+        const item = createElement(doc, "div", "zab-chat__history-item");
+        item.setAttribute("role", "button");
         const preview = createElement(
           doc,
           "div",
@@ -520,10 +590,19 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         }
         item.append(preview, createElement(doc, "div", "zab-chat__history-meta", metaParts.join(" · ")));
         if (!session || session.current || !session.available || !session.session_id) {
-          item.disabled = true;
+          item.classList.add("zab-chat__history-item--disabled");
+          item.setAttribute("aria-disabled", "true");
         } else {
+          item.tabIndex = 0;
           const sessionId = String(session.session_id);
-          item.addEventListener("click", () => void this._resumeSession(sessionId));
+          const activate = () => void this._resumeSession(sessionId);
+          item.addEventListener("click", activate);
+          item.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              activate();
+            }
+          });
         }
         this.historyPopover.append(item);
       }
@@ -721,7 +800,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
 
     _updateControls() {
       const hasSelection = Boolean(this.selection);
-      const busy = this.sending || this.streaming || this.pendingImageReads > 0;
+      const busy = this.sending || this.streaming || this.savingQuestionAnswer || this.pendingImageReads > 0;
       this.input.disabled = !hasSelection || busy;
       this.sendButton.disabled = !hasSelection || busy || (!this.input.value.trim() && !this.images.length);
       this.stopButton.disabled = !this.streaming;
@@ -745,8 +824,19 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         finalDocument: this.lastFinalDocument,
         currentDocument: this.sessionIdentity,
       });
-      this.saveButton.disabled = !canSave;
-      this.saveButton.title = canSave ? "" : this.strings.savePending;
+      this.saveButton.disabled = !canSave || this.savingQuestionAnswer;
+      this.saveButton.title = canSave && !this.savingQuestionAnswer ? "" : this.strings.savePending;
+      const canUpdateExperience = Boolean(
+        this.sessionOpen
+        && this.sessionIdentity
+        && !this.streaming
+        && !this.sending
+        && !this.savingQuestionAnswer
+        && !this.experienceSubmitting
+        && !this.experienceJobId
+      );
+      this.experienceButton.disabled = !canUpdateExperience;
+      this.experienceButton.title = canUpdateExperience ? "" : this.strings.experiencePending;
     }
 
     async setItem(item) {
@@ -1459,7 +1549,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       }
     }
 
-    async save() {
+    async saveQuestionAnswer() {
       const scope = this._captureScope();
       const answer = this.lastFinalAnswer ? this.lastFinalAnswer.trim() : "";
       const question = this.lastFinalQuestion ? this.lastFinalQuestion.trim() : null;
@@ -1492,17 +1582,22 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       ) {
         return;
       }
-      this.sending = true;
+      this.savingQuestionAnswer = true;
       this._updateControls();
       try {
-        const response = await this.controller.bridgeRequest("POST", "/assistant/session/save-note", {
-          item_key: document.itemKey,
-          attachment_key: document.attachmentKey,
-          context_fingerprint: document.contextFingerprint,
-          document_id: document.documentId,
-          answer,
-          question,
-        });
+        const response = await this.controller.bridgeRequest(
+          "POST",
+          "/assistant/session/save-note",
+          {
+            item_key: document.itemKey,
+            attachment_key: document.attachmentKey,
+            context_fingerprint: document.contextFingerprint,
+            document_id: document.documentId,
+            answer,
+            question,
+          },
+          { timeoutMs: 60000, retryOnUnreachable: false },
+        );
         if (!this._scopeMatches(scope)) {
           return;
         }
@@ -1517,13 +1612,133 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           this._setStatus("error", this.strings.saveFailed);
         }
       } finally {
-        if (this._scopeMatches(scope)) {
-          this.sending = false;
-          this._updateControls();
-        }
+        this.savingQuestionAnswer = false;
+        this._updateControls();
         if (!this.disposed && !this.streaming) {
           await this._applyPendingSelection();
         }
+      }
+    }
+
+    async updateExperienceNote() {
+      if (
+        !this.sessionOpen
+        || !this.sessionIdentity
+        || this.streaming
+        || this.sending
+        || this.savingQuestionAnswer
+        || this.experienceJobId
+      ) {
+        return;
+      }
+      if (!this.win.confirm(this.strings.experienceConfirm)) {
+        return;
+      }
+      const scope = this._captureScope();
+      const document = { ...this.sessionIdentity };
+      this.experienceSubmitting = true;
+      this._setStatus("working", this.strings.experienceQueued);
+      this._updateControls();
+      try {
+        const response = await this.controller.bridgeRequest("POST", "/assistant/experience-note/update", {
+          item_key: document.itemKey,
+          attachment_key: document.attachmentKey,
+          context_fingerprint: document.contextFingerprint,
+          document_id: document.documentId,
+        });
+        this.experienceJobId = String(response.job_id || "");
+        this.experienceJobScope = { ...scope };
+        if (!this.experienceJobId) {
+          throw new Error("Bridge returned an invalid experience job");
+        }
+        this._scheduleExperiencePoll(0);
+      } catch (error) {
+        if (this._scopeMatches(scope)) {
+          this._showError(error);
+          this._setStatus("error", this.strings.experienceFailed);
+        }
+      } finally {
+        this.experienceSubmitting = false;
+        this._updateControls();
+      }
+    }
+
+    _scheduleExperiencePoll(delay) {
+      if (!this.experienceJobId || this.disposed) {
+        return;
+      }
+      if (this.experiencePollTimer !== null) {
+        this.win.clearTimeout(this.experiencePollTimer);
+      }
+      this.experiencePollTimer = this.win.setTimeout(() => void this._pollExperienceNote(), delay);
+    }
+
+    async _pollExperienceNote() {
+      this.experiencePollTimer = null;
+      const jobId = this.experienceJobId;
+      const scope = this.experienceJobScope;
+      if (!jobId || this.disposed) {
+        return;
+      }
+      try {
+        const response = await this.controller.bridgeRequest(
+          "GET",
+          `/assistant/experience-note/jobs/${encodeURIComponent(jobId)}`,
+        );
+        const stageText = {
+          collecting: this.strings.experienceCollecting,
+          extracting: this.strings.experienceExtracting,
+          reconciling: this.strings.experienceReconciling,
+          linking: this.strings.experienceLinking,
+          rendering: this.strings.experienceRendering,
+          writing: this.strings.experienceWriting,
+        };
+        const statusText = stageText[String(response.stage || "")] || this.strings.experienceGenerating;
+        if (scope && this._scopeMatches(scope) && !["completed", "failed"].includes(response.status)) {
+          this._setStatus("working", statusText);
+        }
+        if (response.status === "completed") {
+          let success = this.strings.experienceSuccess;
+          success = success.replace("{noteKey}", String(response.note_key || "—"));
+          success = success.replace("{newExchanges}", String(response.new_exchange_count || 0));
+          success = success.replace("{reusedExchanges}", String(response.reused_exchange_count || 0));
+          success = success.replace("{knowledgeUnits}", String(response.knowledge_unit_count || 0));
+          success = success.replace("{missingKnowledge}", String(response.missing_source_knowledge_count || 0));
+          if (response.update_mode === "up_to_date") {
+            success = this.strings.experienceUpToDate;
+          }
+          if (scope && this._scopeMatches(scope)) {
+            const warnings = Array.isArray(response.warnings)
+              ? response.warnings.filter((value) => typeof value === "string" && value.trim())
+              : [];
+            const detail = warnings.length ? `${success}\n⚠ ${warnings.join("\n⚠ ")}` : success;
+            this._addMessage("system", detail);
+            this._setStatus("ready", success);
+          }
+          this.experienceJobId = null;
+          this.experienceJobScope = null;
+          this._updateControls();
+          return;
+        }
+        if (response.status === "failed") {
+          const detail = response.error && response.error.message ? response.error.message : this.strings.experienceFailed;
+          if (scope && this._scopeMatches(scope)) {
+            this._addMessage("system", `${this.strings.experienceFailed}: ${detail}`);
+            this._setStatus("error", this.strings.experienceFailed);
+          }
+          this.experienceJobId = null;
+          this.experienceJobScope = null;
+          this._updateControls();
+          return;
+        }
+        this._scheduleExperiencePoll(Math.max(500, Number(response.poll_interval_ms) || 1000));
+      } catch (error) {
+        if (scope && this._scopeMatches(scope)) {
+          this._showError(error);
+        }
+        this.experienceJobId = null;
+        this.experienceJobScope = null;
+        this._updateControls();
       }
     }
 
@@ -1612,6 +1827,10 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.selectionGeneration += 1;
       this.sessionGeneration += 1;
       this._cancelPoll();
+      if (this.experiencePollTimer !== null) {
+        this.win.clearTimeout(this.experiencePollTimer);
+        this.experiencePollTimer = null;
+      }
       if (this.currentAssistant && this.currentAssistant._zabRenderFrame) {
         this.win.cancelAnimationFrame(this.currentAssistant._zabRenderFrame);
       }
@@ -1620,7 +1839,11 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         this._copyHandler = null;
       }
       if (this._historyDismissHandler) {
-        this.doc.removeEventListener("click", this._historyDismissHandler, true);
+        const dismissTargets = Array.isArray(this._historyDismissTargets) ? this._historyDismissTargets : [];
+        for (const [target, eventName] of dismissTargets) {
+          target.removeEventListener(eventName, this._historyDismissHandler, true);
+        }
+        this._historyDismissTargets = [];
         this._historyDismissHandler = null;
       }
       this.root.remove();
