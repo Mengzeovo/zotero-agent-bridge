@@ -67,7 +67,7 @@ class AddonClient:
                     return response["result"]
                 error = response.get("error", {})
                 error_code = error.get("code", "addon_error")
-                status_code = 409 if error_code in {"version_conflict", "collection_conflict"} else 503
+                status_code = 409 if error_code in {"version_conflict", "collection_conflict", "experience_note_conflict"} else 503
                 if error_code in {"invalid_request", "invalid_attachment_path", "invalid_parent_collection"}:
                     status_code = 422
                 elif error_code in {"item_not_found", "collection_not_found", "parent_collection_not_found"}:

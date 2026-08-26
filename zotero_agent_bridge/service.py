@@ -25,6 +25,9 @@ from .lifecycle import BridgeLifecycleController
 from .models import (
     AssistantContextMetadata,
     AssistantEventsResponse,
+    AssistantExperienceNoteJobAccepted,
+    AssistantExperienceNoteJobStatus,
+    AssistantExperienceNoteUpdateRequest,
     AssistantMessageRequest,
     AssistantModelSelectRequest,
     AssistantSaveNoteRequest,
@@ -34,20 +37,27 @@ from .models import (
     AssistantSessionResumeRequest,
     AssistantThinkingLevelRequest,
 )
+from .experience_notes import ExperienceNoteJobManager, ExperienceSnapshot, TITLE_SYSTEM_PROMPT
 from .pi_chat import PiChatManager
+from .pi_generation import PiOneShotGenerator
 from .reading_context import ReadingContext, ReadingContextBuilder
+from .session_transcript import (
+    CONTEXT_BEGIN as _CONTEXT_BEGIN,
+    CONTEXT_END as _CONTEXT_END,
+    CONTEXT_LOADED_MESSAGE as _CONTEXT_LOADED_MESSAGE,
+    QUESTION_BEGIN as _QUESTION_BEGIN,
+    QUESTION_END as _QUESTION_END,
+    content_text as _shared_content_text,
+    finalized_pairs_from_messages as _shared_finalized_pairs,
+    project_bootstrap_text as _shared_project_bootstrap_text,
+)
 from .utils import now_iso
 from .version import BRIDGE_VERSION
 from .write_queue import SerialWriteExecutor
 from .zotero_local import ZoteroLocalClient
 
 
-_CONTEXT_BEGIN = "<!-- ZAB_SYSTEM_LITERATURE_CONTEXT_V1_BEGIN -->"
-_CONTEXT_END = "<!-- ZAB_SYSTEM_LITERATURE_CONTEXT_V1_END -->"
-_QUESTION_BEGIN = "<!-- ZAB_USER_QUESTION_V1_BEGIN -->"
-_QUESTION_END = "<!-- ZAB_USER_QUESTION_V1_END -->"
 _BOOTSTRAP_MARKERS = (_CONTEXT_BEGIN, _CONTEXT_END, _QUESTION_BEGIN, _QUESTION_END)
-_CONTEXT_LOADED_MESSAGE = "[Literature context loaded]"
 
 
 def _neutralize_bootstrap_markers(value: str) -> str:
@@ -76,25 +86,11 @@ def _build_literature_bootstrap_prompt(context_markdown: str, question: str) -> 
 
 
 def _project_bootstrap_text(value: str) -> str | None:
-    if _CONTEXT_BEGIN not in value:
-        return None
-    if _QUESTION_BEGIN not in value or _QUESTION_END not in value:
-        return _CONTEXT_LOADED_MESSAGE
-    question = value.rsplit(_QUESTION_BEGIN, 1)[1].split(_QUESTION_END, 1)[0].strip()
-    return question or _CONTEXT_LOADED_MESSAGE
+    return _shared_project_bootstrap_text(value)
 
 
 def _session_message_text(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(block.get("text"))
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
-        )
-    return ""
+    return _shared_content_text(message.get("content"))
 
 
 def _session_file_preview(path_value: str, *, max_chars: int = 96) -> dict[str, Any]:
@@ -190,45 +186,29 @@ def _project_assistant_messages(response: dict[str, Any]) -> dict[str, Any]:
 
 
 def _agent_message_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
-        return ""
-    return "\n".join(
-        str(block.get("text"))
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
-    ).strip()
+    return _shared_content_text(content)
 
 
 def _finalized_assistant_pairs(response: dict[str, Any]) -> list[tuple[str | None, str]]:
-    messages = ((response.get("data") or {}).get("messages"))
-    if not isinstance(messages, list):
-        return []
-    pairs: list[tuple[str | None, str]] = []
-    question: str | None = None
-    for message in messages:
-        if not isinstance(message, dict):
-            continue
-        role = message.get("role")
-        text = _agent_message_text(message.get("content"))
-        if role == "user":
-            question = text or None
-            continue
-        if role != "assistant" or not text:
-            continue
-        if message.get("stopReason") != "stop":
-            continue
-        pairs.append((question, text))
-        question = None
-    return pairs
+    return _shared_finalized_pairs(response)
+
+
+def _normalize_short_note_title(value: str | None) -> str:
+    first_line = (value or "").strip().splitlines()[0] if (value or "").strip() else ""
+    first_line = re.sub(r"\\([A-Za-z]+)", r"\1", first_line).replace("$", "").replace("<", "").replace(">", "")
+    title = " ".join(first_line.split()).strip("#`'\"“”‘’《》〈〉：:；;，,。.!！?？-— ")
+    return title[:15]
 
 
 def _safe_note_title(value: str | None) -> str:
-    title = _escape_raw_html(" ".join((value or "Pi 阅读助手记录").split()))
+    title = _escape_raw_html(" ".join((value or "Pi问答记录").split()))
     for char in ("#", "`"):
         title = title.replace(char, "")
-    return title.strip()[:120] or "Pi 阅读助手记录"
+    return title.strip()[:120] or "Pi问答记录"
+
+
+def _fallback_note_title(question: str | None, answer: str) -> str:
+    return _normalize_short_note_title(question) or _normalize_short_note_title(answer) or "Pi问答记录"
 
 
 def _escape_raw_html(value: str) -> str:
@@ -485,6 +465,8 @@ class BridgeService:
         local_client: ZoteroLocalClient | None = None,
         writer: SerialWriteExecutor | None = None,
         pi_chat: PiChatManager | None = None,
+        pi_generator: PiOneShotGenerator | None = None,
+        experience_jobs: ExperienceNoteJobManager | None = None,
         reading_context_builder: ReadingContextBuilder | None = None,
     ) -> None:
         self.settings = settings
@@ -505,10 +487,30 @@ class BridgeService:
             settings.operations_log_path,
         )
         self.pi_chat = pi_chat or (PiChatManager(settings) if settings.pi else None)
+        self.pi_generator = pi_generator or (PiOneShotGenerator(settings) if settings.pi else None)
         self.reading_context_builder = reading_context_builder or (
             ReadingContextBuilder.from_settings(settings) if settings.pi else None
         )
         self._assistant_lock = threading.RLock()
+        self.experience_jobs = experience_jobs or (
+            ExperienceNoteJobManager(
+                settings,
+                generator=self.pi_generator,
+                writer=self.writer,
+                render_markdown=self._render_note_html,
+                normalize_markdown=_escape_markdown_text_preserving_math,
+                source_loader=(
+                    lambda snapshot: self.pi_chat.list_item_session_sources(
+                        snapshot.item_key,
+                        library_id=snapshot.library_id,
+                    )
+                    if self.pi_chat
+                    else []
+                ),
+            )
+            if settings.pi and self.pi_generator
+            else None
+        )
         self._active_reading_context: ReadingContext | None = None
         self._active_context_title: str | None = None
         self._active_context_injection_required = False
@@ -885,80 +887,132 @@ class BridgeService:
                 "poll_interval_ms": self.settings.pi.poll_interval_ms,
             }
 
-    def save_assistant_note(self, request: AssistantSaveNoteRequest) -> AssistantSaveNoteResponse:
+    def _validated_note_snapshot(self, request: AssistantSaveNoteRequest) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
+        context = self._active_reading_context
+        session = pi_chat.status()
+        if context is None or not self._session_matches_context(session, context):
+            raise BridgeError(
+                409,
+                "assistant_context_not_prepared",
+                "Open the matching Zotero literature item before saving an assistant answer",
+            )
+        expected_scope = {
+            "item_key": context.item_key,
+            "attachment_key": context.attachment_key,
+            "context_fingerprint": context.fingerprint.lower(),
+            "document_id": str(session.get("document_id") or "").lower(),
+        }
+        requested_scope = {
+            "item_key": request.item_key,
+            "attachment_key": request.attachment_key,
+            "context_fingerprint": request.context_fingerprint.lower(),
+            "document_id": request.document_id.lower(),
+        }
+        if requested_scope != expected_scope:
+            raise BridgeError(
+                409,
+                "assistant_save_scope_mismatch",
+                "The selected answer belongs to a different Zotero document or Pi session",
+                {"expected": expected_scope, "requested": requested_scope},
+            )
+        if session.get("streaming"):
+            raise BridgeError(409, "assistant_answer_streaming", "Wait for the assistant answer to finish before saving")
+        answer = request.answer.strip()
+        supplied_question = request.question.strip() if request.question else None
+        projected = _project_assistant_messages(pi_chat.get_messages())
+        pairs = [pair for pair in _finalized_assistant_pairs(projected) if pair[1] == answer]
+        if not pairs:
+            raise BridgeError(
+                409,
+                "assistant_answer_not_finalized",
+                "The selected answer is not a finalized message in the active Pi session",
+            )
+        if supplied_question is not None:
+            matching_pairs = [pair for pair in pairs if pair[0] == supplied_question]
+            if not matching_pairs:
+                raise BridgeError(
+                    409,
+                    "assistant_question_mismatch",
+                    "The selected question and answer no longer match the active Pi session",
+                )
+            question = matching_pairs[-1][0]
+        else:
+            question = pairs[-1][0]
+        model_state: dict[str, Any] = {}
+        try:
+            model_state = pi_chat.get_state()
+        except BridgeError:
+            pass
+        return {
+            "context": context,
+            "session_identity": (
+                session.get("generation"),
+                str(session.get("document_id") or "").lower(),
+                str(session.get("session_file") or "").lower(),
+            ),
+            "question": question,
+            "answer": answer,
+            "model": _model_label(model_state, self.settings.pi.model if self.settings.pi else None),
+            "paper_title": self._active_context_title,
+        }
+
+    def save_assistant_note(self, request: AssistantSaveNoteRequest) -> AssistantSaveNoteResponse:
         with self._assistant_lock:
-            context = self._active_reading_context
-            session = pi_chat.status()
-            if context is None or not self._session_matches_context(session, context):
-                raise BridgeError(
-                    409,
-                    "assistant_context_not_prepared",
-                    "Open the matching Zotero literature item before saving an assistant answer",
-                )
-            expected_scope = {
-                "item_key": context.item_key,
-                "attachment_key": context.attachment_key,
-                "context_fingerprint": context.fingerprint.lower(),
-                "document_id": str(session.get("document_id") or "").lower(),
-            }
-            requested_scope = {
-                "item_key": request.item_key,
-                "attachment_key": request.attachment_key,
-                "context_fingerprint": request.context_fingerprint.lower(),
-                "document_id": request.document_id.lower(),
-            }
-            if requested_scope != expected_scope:
-                raise BridgeError(
-                    409,
-                    "assistant_save_scope_mismatch",
-                    "The selected answer belongs to a different Zotero document or Pi session",
-                    {"expected": expected_scope, "requested": requested_scope},
-                )
-            if session.get("streaming"):
-                raise BridgeError(409, "assistant_answer_streaming", "Wait for the assistant answer to finish before saving")
-
-            answer = request.answer.strip()
-            supplied_question = request.question.strip() if request.question else None
-            projected = _project_assistant_messages(pi_chat.get_messages())
-            pairs = [pair for pair in _finalized_assistant_pairs(projected) if pair[1] == answer]
-            if not pairs:
-                raise BridgeError(
-                    409,
-                    "assistant_answer_not_finalized",
-                    "The selected answer is not a finalized message in the active Pi session",
-                )
-            if supplied_question is not None:
-                matching_pairs = [pair for pair in pairs if pair[0] == supplied_question]
-                if not matching_pairs:
-                    raise BridgeError(
-                        409,
-                        "assistant_question_mismatch",
-                        "The selected question and answer no longer match the active Pi session",
-                    )
-                question = matching_pairs[-1][0]
-            else:
-                question = pairs[-1][0]
-
-            model_state: dict[str, Any] = {}
-            try:
-                model_state = pi_chat.get_state()
-            except BridgeError:
-                pass
-            model = _model_label(model_state, self.settings.pi.model if self.settings.pi else None)
+            snapshot = self._validated_note_snapshot(request)
+        question = snapshot["question"]
+        answer = snapshot["answer"]
+        if request.title:
             note_title = _safe_note_title(request.title)
+            title_source = "request"
+        else:
+            fallback_title = _fallback_note_title(question, answer)
+            note_title = fallback_title
+            title_source = "fallback"
+            if self.pi_generator and self.settings.pi:
+                prompt = "\n".join(
+                    [
+                        "<ZAB_QUESTION>",
+                        (question or "（无文本问题）")[:4000],
+                        "</ZAB_QUESTION>",
+                        "<ZAB_ANSWER>",
+                        answer[:8000],
+                        "</ZAB_ANSWER>",
+                    ]
+                )
+                try:
+                    generated = self.pi_generator.generate(
+                        prompt,
+                        system_prompt=TITLE_SYSTEM_PROMPT,
+                        model=snapshot["model"],
+                        thinking="low",
+                        timeout_seconds=self.settings.pi.note_title_timeout_seconds,
+                        cwd=snapshot["context"].cwd,
+                    )
+                    normalized = _normalize_short_note_title(generated)
+                    if normalized:
+                        note_title = _safe_note_title(normalized)
+                        title_source = "ai"
+                except BridgeError:
+                    note_title = _safe_note_title(fallback_title)
+
+        with self._assistant_lock:
+            current = self._validated_note_snapshot(request)
+            if current["session_identity"] != snapshot["session_identity"]:
+                raise BridgeError(409, "assistant_session_changed", "The Pi session changed while generating the note title")
+            context = current["context"]
             generated_at = now_iso()
             markdown_lines = [
                 f"# {note_title}",
                 "",
-                f"- 文献：{_markdown_inline(self._active_context_title or context.item_key)}",
+                f"- 文献：{_markdown_inline(current['paper_title'] or context.item_key)}",
                 f"- Zotero Item Key：{_markdown_inline(context.item_key)}",
                 f"- Attachment Key：{_markdown_inline(context.attachment_key)}",
                 f"- Pi Document ID：{_markdown_inline(request.document_id)}",
                 f"- 生成时间：{_markdown_inline(generated_at)}",
             ]
-            if model:
-                markdown_lines.append(f"- 模型：{_markdown_inline(model)}")
+            if current["model"]:
+                markdown_lines.append(f"- 模型：{_markdown_inline(current['model'])}")
             if question:
                 markdown_lines.extend(["", "## 问题", "", _quote_markdown(_escape_markdown_text_preserving_math(question.strip()))])
             markdown_lines.extend(["", "## 回答", "", _escape_markdown_text_preserving_math(answer)])
@@ -967,6 +1021,7 @@ class BridgeService:
             result = self.writer.execute(
                 "create_assistant_note",
                 {
+                    "library_id": context.library_id,
                     "item_key": context.item_key,
                     "attachment_key": context.attachment_key,
                     "document_id": request.document_id,
@@ -983,8 +1038,79 @@ class BridgeService:
                 mirror_ref=None,
                 sync_status=result.get("sync_status") or "synced",
                 version=result.get("version"),
-                title=self._active_context_title,
+                title=current["paper_title"],
+                note_title=note_title,
+                title_source=title_source,
             )
+
+    def update_experience_note(
+        self,
+        request: AssistantExperienceNoteUpdateRequest,
+    ) -> AssistantExperienceNoteJobAccepted:
+        pi_chat, _ = self._require_assistant()
+        if not self.experience_jobs:
+            raise BridgeError(503, "experience_notes_unavailable", "Experience note generation is unavailable")
+        with self._assistant_lock:
+            context = self._active_reading_context
+            session = pi_chat.status()
+            if context is None or not self._session_matches_context(session, context):
+                raise BridgeError(409, "assistant_context_not_prepared", "Open the matching Zotero literature item first")
+            expected = {
+                "item_key": context.item_key,
+                "attachment_key": context.attachment_key,
+                "context_fingerprint": context.fingerprint.lower(),
+                "document_id": str(session.get("document_id") or "").lower(),
+            }
+            requested = {
+                "item_key": request.item_key,
+                "attachment_key": request.attachment_key,
+                "context_fingerprint": request.context_fingerprint.lower(),
+                "document_id": request.document_id.lower(),
+            }
+            if requested != expected:
+                raise BridgeError(
+                    409,
+                    "assistant_experience_scope_mismatch",
+                    "The selected document no longer matches the active Pi session",
+                    {"expected": expected, "requested": requested},
+                )
+            if session.get("streaming"):
+                raise BridgeError(409, "assistant_answer_streaming", "Wait for the assistant answer to finish first")
+            model_state: dict[str, Any] = {}
+            try:
+                model_state = pi_chat.get_state()
+            except BridgeError:
+                pass
+            model = _model_label(model_state, self.settings.pi.model if self.settings.pi else None)
+            library_id = context.library_id
+            snapshot = ExperienceSnapshot(
+                scope_key=f"{library_id}:{context.item_key}",
+                library_id=library_id,
+                item_key=context.item_key,
+                attachment_key=context.attachment_key,
+                document_id=request.document_id.lower(),
+                context_fingerprint=request.context_fingerprint.lower(),
+                paper_title=self._active_context_title or context.item_key,
+                cwd=str(context.cwd),
+                sources=(),
+                model=model,
+                # Structured extraction and organization should stay fast and deterministic.
+                # Use `low` rather than `minimal`: some configured providers reject `minimal`.
+                thinking="low",
+                force_rebuild=request.force_rebuild,
+            )
+            job = self.experience_jobs.submit(snapshot)
+            accepted = self.experience_jobs.payload(job.job_id)
+            return AssistantExperienceNoteJobAccepted(
+                job_id=job.job_id,
+                status=accepted["status"],
+                poll_interval_ms=accepted["poll_interval_ms"],
+            )
+
+    def experience_note_job_status(self, job_id: str) -> AssistantExperienceNoteJobStatus:
+        if not self.experience_jobs:
+            raise BridgeError(503, "experience_notes_unavailable", "Experience note generation is unavailable")
+        return AssistantExperienceNoteJobStatus(**self.experience_jobs.payload(job_id))
 
     def abort_assistant_session(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
@@ -1029,6 +1155,10 @@ class BridgeService:
             )
 
     def shutdown(self) -> None:
+        if self.experience_jobs:
+            self.experience_jobs.close()
+        elif self.pi_generator:
+            self.pi_generator.close()
         with self._assistant_lock:
             if self.pi_chat:
                 self.pi_chat.close()
@@ -1036,8 +1166,33 @@ class BridgeService:
             self._clear_assistant_context()
 
 
+
+
+
+
 def build_service(settings: Settings | None = None) -> BridgeService:
     return BridgeService(settings or Settings.from_env())
+
+
+_RETIRED_HTTP_ROUTES = (
+    ("GET", "/capabilities"),
+    ("GET", "/collections"),
+    ("GET", "/collections/{collection_key}"),
+    ("POST", "/collections"),
+    ("PATCH", "/collections/{collection_key}"),
+    ("GET", "/items/search"),
+    ("GET", "/items/{item_key}"),
+    ("POST", "/items"),
+    ("PATCH", "/items/{item_key}"),
+    ("POST", "/items/{item_key}/attachments/linked-pdf"),
+    ("POST", "/items/{item_key}/notes"),
+    ("POST", "/sync/export"),
+    ("POST", "/obsidian/notes/prepare-sync"),
+    ("POST", "/obsidian/notes/{note_key}/sync-status"),
+    ("POST", "/obsidian/reindex"),
+    ("GET", "/obsidian/open/{stable_id}"),
+    ("POST", "/assistant/session/close"),
+)
 
 
 def create_app(
@@ -1059,14 +1214,7 @@ def create_app(
             lifecycle.stop_watchdog()
             service.shutdown()
 
-    app = FastAPI(
-        title="Zotero Pi Assistant Private Bridge",
-        version=BRIDGE_VERSION,
-        lifespan=lifespan,
-        openapi_url=None,
-        docs_url=None,
-        redoc_url=None,
-    )
+    app = FastAPI(title="Zotero Pi Assistant Private Bridge", version=BRIDGE_VERSION, lifespan=lifespan)
     app.state.bridge_lifecycle = lifecycle
 
     def authorize(
@@ -1102,6 +1250,23 @@ def create_app(
     ) -> dict[str, Any]:
         lifecycle.request_shutdown(x_bridge_owner_token)
         return {"status": "shutting_down", "owner_id": lifecycle.owner_id}
+
+    def retired_feature() -> None:
+        raise BridgeError(
+            410,
+            "feature_retired",
+            "This integration surface is no longer supported by Zotero Pi Assistant.",
+            {"product_scope": "zotero-pi-only", "transition_release": "0.4.0-beta"},
+        )
+
+    for retired_method, retired_path in _RETIRED_HTTP_ROUTES:
+        app.add_api_route(
+            retired_path,
+            retired_feature,
+            methods=[retired_method],
+            dependencies=[Depends(authorize)],
+            include_in_schema=False,
+        )
 
     @app.post(
         "/assistant/session/open",
@@ -1166,6 +1331,25 @@ def create_app(
     )
     def save_assistant_note(request: AssistantSaveNoteRequest) -> AssistantSaveNoteResponse:
         return service.save_assistant_note(request)
+
+    @app.post(
+        "/assistant/experience-note/update",
+        dependencies=[Depends(authorize)],
+        response_model=AssistantExperienceNoteJobAccepted,
+        status_code=202,
+    )
+    def update_experience_note(
+        request: AssistantExperienceNoteUpdateRequest,
+    ) -> AssistantExperienceNoteJobAccepted:
+        return service.update_experience_note(request)
+
+    @app.get(
+        "/assistant/experience-note/jobs/{job_id}",
+        dependencies=[Depends(authorize)],
+        response_model=AssistantExperienceNoteJobStatus,
+    )
+    def experience_note_job_status(job_id: str) -> AssistantExperienceNoteJobStatus:
+        return service.experience_note_job_status(job_id)
 
     @app.post("/assistant/session/abort", dependencies=[Depends(authorize)])
     def abort_assistant_session() -> dict[str, Any]:
