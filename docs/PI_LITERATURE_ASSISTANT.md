@@ -1,4 +1,4 @@
-# Zotero Pi Assistant 0.4.2-beta
+# Zotero Pi Assistant 0.4.2
 
 Zotero Pi Assistant embeds a Pi-powered literature chat panel in the Zotero Item Pane. The XPI bundles a private Windows x64 Bridge; the add-on owns Bridge lifecycle, while the Bridge owns Pi RPC lifecycle.
 
@@ -93,7 +93,7 @@ Pi is launched with tools, skills, prompt templates, extensions, context files, 
 ## Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2-beta -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2 -BuildBridge
 ```
 
 Normal users install the XPI and do not need Python, pip, source checkout, legacy launchers, MCP registration, or Obsidian integration.

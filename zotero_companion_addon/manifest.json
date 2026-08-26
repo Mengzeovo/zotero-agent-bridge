@@ -1,12 +1,12 @@
 ﻿{
   "manifest_version": 2,
   "name": "Zotero Pi Assistant",
-  "version": "0.4.2-beta",
+  "version": "0.4.2",
   "description": "Built-in Pi literature assistant for Zotero with managed private Bridge.",
   "applications": {
     "zotero": {
       "id": "zotero-agent-bridge@local",
-      "update_url": "https://raw.githubusercontent.com/Mengzeovo/zotero-agent-bridge/main/updates.json",
+      "update_url": "https://raw.githubusercontent.com/Mengzeovo/zotero-agent-bridge/master/updates.json",
       "strict_min_version": "7.0",
       "strict_max_version": "9.0.*"
     }

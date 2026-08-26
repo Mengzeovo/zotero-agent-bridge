@@ -15,8 +15,8 @@ from zotero_agent_bridge.version import BRIDGE_VERSION, LIFECYCLE_PROTOCOL_VERSI
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BUNDLE_ROOT = ROOT / "dist" / "bridge" / "windows-x64" / "0.4.2-beta"
-XPI = ROOT / "dist" / "zotero-agent-bridge-addon-0.4.2-beta.xpi"
+BUNDLE_ROOT = ROOT / "dist" / "bridge" / "windows-x64" / "0.4.2"
+XPI = ROOT / "dist" / "zotero-agent-bridge-addon-0.4.2.xpi"
 TEST_RUNTIME = ROOT / "tmp" / "test-runtime"
 
 
@@ -34,7 +34,7 @@ class BundlePackagingTest(unittest.TestCase):
         TEST_RUNTIME.mkdir(parents=True, exist_ok=True)
 
     def test_runtime_version_and_source_resource(self) -> None:
-        self.assertEqual(BRIDGE_VERSION, "0.4.2-beta")
+        self.assertEqual(BRIDGE_VERSION, "0.4.2")
         self.assertEqual(LIFECYCLE_PROTOCOL_VERSION, 2)
         self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
         self.assertTrue(resource_path("config", "literature-assistant.md").is_file())
@@ -58,7 +58,7 @@ class BundlePackagingTest(unittest.TestCase):
     def test_bundle_manifest_covers_exact_file_set_and_hashes(self) -> None:
         manifest = json.loads((BUNDLE_ROOT / "bridge-manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["bundle_schema_version"], 1)
-        self.assertEqual(manifest["bridge_version"], "0.4.2-beta")
+        self.assertEqual(manifest["bridge_version"], "0.4.2")
         self.assertEqual(manifest["protocol_version"], 2)
         self.assertEqual(manifest["product_scope"], "zotero-pi-only")
         self.assertEqual(manifest["distribution"], "xpi-bundled")
@@ -86,7 +86,7 @@ class BundlePackagingTest(unittest.TestCase):
             manifest = json.loads(archive.read("bridge/windows-x64/bridge-manifest.json"))
             sbom = json.loads(archive.read("bridge/windows-x64/SBOM.cdx.json"))
             self.assertEqual(sbom["metadata"]["component"]["name"], "zotero-pi-assistant")
-            self.assertEqual(sbom["metadata"]["component"]["version"], "0.4.2-beta")
+            self.assertEqual(sbom["metadata"]["component"]["version"], "0.4.2")
             for record in manifest["files"]:
                 payload = archive.read(f"bridge/windows-x64/{record['path']}")
                 self.assertEqual(len(payload), record["size"])
@@ -94,8 +94,8 @@ class BundlePackagingTest(unittest.TestCase):
         script = r"""
 const manager = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
 const manifest = JSON.parse(process.argv[1]);
-const accepted = manager.validateBundledManifest(manifest, '0.4.2-beta');
-if (accepted.protocol_version !== 2 || accepted.bridge_version !== '0.4.2-beta' || accepted.product_scope !== 'zotero-pi-only') process.exitCode = 1;
+const accepted = manager.validateBundledManifest(manifest, '0.4.2');
+if (accepted.protocol_version !== 2 || accepted.bridge_version !== '0.4.2' || accepted.product_scope !== 'zotero-pi-only') process.exitCode = 1;
 """
         result = subprocess.run(
             ["node", "-e", script, json.dumps(manifest)],
@@ -143,13 +143,13 @@ const path = require('path');
 const bundle = require('./zotero_companion_addon/chrome/content/scripts/bridge_bundle_manager.js').__test;
 const config = require('./zotero_companion_addon/chrome/content/scripts/bridge_config_manager.js').__test;
 const manifest = {
-  bundle_schema_version: 1, bridge_version: '0.4.2-beta', protocol_version: 2,
+  bundle_schema_version: 1, bridge_version: '0.4.2', protocol_version: 2,
   product_scope: 'zotero-pi-only', distribution: 'xpi-bundled', platform: 'windows', architecture: 'x64',
   entrypoint: 'zab-bridge/zab-bridge.exe', sentinel: '.zab-bundle-installed.json',
   files: [{path:'zab-bridge/zab-bridge.exe',size:1,sha256:'a'.repeat(64)}]
 };
-assert.strictEqual(bundle.validateManifest(manifest).bridge_version, '0.4.2-beta');
-assert.strictEqual(bundle.validateBundledManifest(manifest, '0.4.2-beta').protocol_version, 2);
+assert.strictEqual(bundle.validateManifest(manifest).bridge_version, '0.4.2');
+assert.strictEqual(bundle.validateBundledManifest(manifest, '0.4.2').protocol_version, 2);
 assert.throws(() => bundle.validateBundledManifest(manifest, '0.4.0-beta'));
 const legacyManifest = {...manifest, bridge_version:'0.3.5', protocol_version:1};
 delete legacyManifest.product_scope;

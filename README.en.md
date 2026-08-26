@@ -1,6 +1,6 @@
 # Zotero Pi Assistant
 
-**Current version: 0.4.2-beta**
+**Current version: 0.4.2**
 
 Zotero Pi Assistant is a Pi-powered literature assistant embedded in the Zotero Item Pane. It reads the selected paper's local PDF, Zotero notes, and annotations; maintains resumable per-paper conversations; renders Markdown and LaTeX; and saves a finalized answer as a Zotero Note after explicit user confirmation.
 
@@ -19,7 +19,7 @@ This repository is Pi-only. Generic Zotero CRUD, MCP, Obsidian synchronization, 
 
 ## Install
 
-1. Download `zotero-agent-bridge-addon-0.4.2-beta.xpi` from Releases.
+1. Download `zotero-agent-bridge-addon-0.4.2.xpi` from Releases.
 2. In Zotero, open **Tools → Plugins → Install Plugin From File…**.
 3. Select the XPI and restart Zotero.
 4. Select a paper with a local PDF and open **Pi Literature Assistant** in the Item Pane.
@@ -54,13 +54,13 @@ Requires Python 3.12+, PowerShell, Node.js, and a configured Pi CLI.
 ```powershell
 py -3.12 -m pip install -e .
 py -3.12 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2-beta -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2 -BuildBridge
 ```
 
 Outputs:
 
 ```text
-dist\zotero-agent-bridge-addon-0.4.2-beta.xpi
+dist\zotero-agent-bridge-addon-0.4.2.xpi
 dist\zotero-agent-bridge-addon.xpi
 ```
 

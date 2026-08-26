@@ -152,7 +152,7 @@ async function writeBootstrapLog(message, details) {
 }
 
 function buildZoteroAgentBridge(rootURI) {
-  const ADDON_VERSION = "0.4.2-beta";
+  const ADDON_VERSION = "0.4.2";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const DEFAULT_BRIDGE_HOST = "127.0.0.1";
