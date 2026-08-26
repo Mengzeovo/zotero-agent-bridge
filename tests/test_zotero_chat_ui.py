@@ -51,6 +51,35 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertIn('"quit-application-granted"', bootstrap)
         self.assertIn('state.bridgeOwnership === "owned"', bootstrap)
 
+    def test_note_writer_maps_external_user_and_group_ids_to_internal_libraries(self) -> None:
+        bootstrap = BOOTSTRAP_SCRIPT.read_text(encoding="utf-8-sig")
+        match = re.search(
+            r"  function resolveLibraryID\(libraryID\) \{.*?\n  \}\n\n  async function getItemByKey",
+            bootstrap,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        function_source = match.group(0).rsplit("\n\n  async function getItemByKey", 1)[0]
+        script = f"""
+const assert = require('assert');
+global.Zotero = {{
+  Users: {{ getCurrentUserID: () => 15963110 }},
+  Libraries: {{
+    userLibraryID: 1,
+    get: (id) => id === 1 ? {{libraryID: 1}} : (id === 8 ? {{libraryID: 8, groupID: 4242}} : null),
+    getAll: () => [{{libraryID: 1}}, {{libraryID: 8, groupID: 4242}}],
+  }},
+}};
+{function_source}
+assert.strictEqual(resolveLibraryID(null), 1);
+assert.strictEqual(resolveLibraryID(15963110), 1);
+assert.strictEqual(resolveLibraryID('15963110'), 1);
+assert.strictEqual(resolveLibraryID(8), 8);
+assert.strictEqual(resolveLibraryID(4242), 8);
+"""
+        result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_panel_uses_assistant_endpoints_and_safe_text_rendering(self) -> None:
         panel = PANEL_SCRIPT.read_text(encoding="utf-8")
         for endpoint in (
@@ -66,6 +95,8 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
             "/assistant/thinking-levels",
             "/assistant/session/thinking-level",
             "/assistant/session/save-note",
+            "/assistant/experience-note/update",
+            "/assistant/experience-note/jobs/",
             "/assistant/session/history",
             "/assistant/session/resume",
         ):
@@ -101,6 +132,20 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertIn("accepted.context_injected", panel)
         self.assertIn("this.saveButton.disabled = true", panel)
         self.assertIn("this.win.confirm(this.strings.saveConfirm)", panel)
+        self.assertIn("this.win.confirm(this.strings.experienceConfirm)", panel)
+        self.assertIn("saveQuestionAnswer", panel)
+        self.assertIn("updateExperienceNote", panel)
+        self.assertIn("experienceExtracting", panel)
+        self.assertIn("experienceReconciling", panel)
+        self.assertIn("experienceLinking", panel)
+        self.assertIn("experienceRendering", panel)
+        self.assertIn("experienceUpToDate", panel)
+        self.assertIn('response.update_mode === "up_to_date"', panel)
+        self.assertIn("response.new_exchange_count", panel)
+        self.assertIn("response.reused_exchange_count", panel)
+        self.assertIn("response.knowledge_unit_count", panel)
+        self.assertIn("response.missing_source_knowledge_count", panel)
+        self.assertIn("retryOnUnreachable: false", panel)
         self.assertIn("canSaveSnapshot", panel)
         self.assertIn("this.lastFinalScope", panel)
         self.assertIn("this.lastFinalAnswer = null", panel)
@@ -119,8 +164,8 @@ class ZoteroChatUiStaticTest(unittest.TestCase):
         self.assertIn("toggleHistory", panel)
         self.assertIn("_resumeSession", panel)
         self.assertIn("session_id", panel)
-        self.assertIn('this.doc.addEventListener("click", this._historyDismissHandler, true)', panel)
-        self.assertIn('this.doc.removeEventListener("click", this._historyDismissHandler, true)', panel)
+        self.assertIn('dismissDoc.addEventListener(eventName, this._historyDismissHandler, true)', panel)
+        self.assertIn('target.removeEventListener(eventName, this._historyDismissHandler, true)', panel)
         self.assertIn("this._hideHistory()", panel)
         self.assertIn("zab-chat__history-popover", panel)
         self.assertIn("selectsRow.append(modelRow, thinkingRow)", panel)
@@ -457,8 +502,15 @@ assert.strictEqual(reader.entry.bodies.has(transientBody), false);
             command_switch = source.split("async function processCommand(request)", 1)[1].split(
                 "function validateRequest(request)", 1
             )[0]
-            self.assertEqual(re.findall(r'case "([^"]+)"', command_switch), ["create_assistant_note"])
+            self.assertEqual(
+                re.findall(r'case "([^"]+)"', command_switch),
+                ["create_assistant_note", "upsert_assistant_experience_note"],
+            )
             self.assertIn("handleCreateAssistantNote(request)", source)
+            self.assertIn("handleUpsertAssistantExperienceNote(request)", source)
+            self.assertIn("parent.getNotes()", source)
+            self.assertIn("String(requested.getNote() || \"\").includes(EXPERIENCE_NOTE_MARKER)", source)
+            self.assertIn("EXPERIENCE_NOTE_MARKER", source)
             self.assertIn("Assistant document_id must be a SHA-256 hex digest", source)
             self.assertIn("Assistant context_fingerprint must be a SHA-256 hex digest", source)
             self.assertIn("Assistant attachment_key is required", source)
@@ -528,47 +580,61 @@ assert.strictEqual(test.canSaveSnapshot({{ sessionOpen: true, streaming: false, 
             bootstrap.index('lifecycle.protocol_version === undefined'),
             bootstrap.index('Number.isInteger(Number(lifecycle.pid))'),
         )
-        self.assertNotIn('bridgeOwnership = stillOwned ? "owned" : "shared"', bootstrap)
-        self.assertIn('classifyLifecycle(lifecycle, { bundled: true })', bootstrap)
         self.assertIn("pid: process.pid", bootstrap)
 
-    def test_lifecycle_classification_accepts_only_current_pi_only_bundle_in_node(self) -> None:
+    def test_lifecycle_v2_classification_preserves_v1_transition_in_node(self) -> None:
         script = f"""
 const assert = require('assert');
 const test = require({json.dumps(str(BOOTSTRAP_SCRIPT))}).__test;
 assert.strictEqual(test.PI_ONLY_LIFECYCLE_PROTOCOL_VERSION, 2);
+assert.strictEqual(test.TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION, 1);
 assert.strictEqual(test.PI_ONLY_PRODUCT_SCOPE, 'zotero-pi-only');
-assert.strictEqual(test.PI_ONLY_BRIDGE_DISTRIBUTION, 'xpi-bundled');
 const current = test.classifyBridgeLifecycle({{
   pid: 42,
-  bridge_version: '0.4.1-beta',
+  bridge_version: '0.3.5',
   protocol_version: 2,
   product_scope: 'zotero-pi-only',
   distribution: 'xpi-bundled',
 }}, {{
   bundled: true,
-  expectedBundleVersion: '0.4.1-beta',
+  expectedBundleVersion: '0.3.5',
   expectedBundleProtocolVersion: 2,
 }});
 assert.strictEqual(current.compatible, true);
 assert.strictEqual(current.piOnly, true);
 assert.strictEqual(current.transitional, false);
-for (const rejected of [
-  {{status: 'ok'}},
-  {{pid:43,bridge_version:'0.3.5',protocol_version:1,distribution:'xpi-bundled'}},
-  {{pid:44,bridge_version:'0.4.1-beta',protocol_version:2,product_scope:'zotero-pi-only',distribution:'source'}},
-  {{pid:45,bridge_version:'0.4.1-beta',protocol_version:2,product_scope:'general-agent-bridge',distribution:'xpi-bundled'}},
-]) {{
-  assert.throws(() => test.classifyBridgeLifecycle(rejected), (error) => error.code === 'bridge_protocol_incompatible');
-}}
+assert.strictEqual(current.productScope, 'zotero-pi-only');
+const v1 = test.classifyBridgeLifecycle({{
+  pid: 43,
+  bridge_version: '0.3.5',
+  protocol_version: 1,
+  distribution: 'xpi-bundled',
+}});
+assert.strictEqual(v1.compatible, true);
+assert.strictEqual(v1.legacy, true);
+assert.strictEqual(v1.transitional, true);
+assert.strictEqual(v1.piOnly, false);
+assert.strictEqual(v1.productScope, 'legacy-agent-bridge');
+const legacy = test.classifyBridgeLifecycle({{status: 'ok'}});
+assert.strictEqual(legacy.protocolVersion, 0);
+assert.strictEqual(legacy.transitional, true);
 assert.throws(
   () => test.classifyBridgeLifecycle({{
-    pid: 46,
-    bridge_version: '0.4.0-beta',
+    pid: 44,
+    bridge_version: '0.3.5',
     protocol_version: 2,
-    product_scope: 'zotero-pi-only',
+    product_scope: 'general-agent-bridge',
     distribution: 'xpi-bundled',
-  }}, {{bundled:true,expectedBundleVersion:'0.4.1-beta',expectedBundleProtocolVersion:2}}),
+  }}),
+  (error) => error.code === 'bridge_protocol_incompatible',
+);
+assert.throws(
+  () => test.classifyBridgeLifecycle({{
+    pid: 45,
+    bridge_version: '0.3.5',
+    protocol_version: 1,
+    distribution: 'xpi-bundled',
+  }}, {{bundled: true, expectedBundleVersion: '0.3.5', expectedBundleProtocolVersion: 2}}),
   (error) => error.code === 'bridge_bundle_runtime_mismatch',
 );
 """
@@ -590,7 +656,7 @@ assert.throws(
         self.assertIn(".zab-chat__selects-row", styles)
         self.assertIn(".zab-chat__actions {\n  display: flex;\n  flex-wrap: wrap;\n  justify-content: space-between;\n  gap: 6px;\n  position: relative;\n}", styles)
         self.assertIn("bottom: calc(100% + 6px);", styles)
-        self.assertIn("max-height: 260px;", styles)
+        self.assertIn("max-height: 320px;", styles)
         self.assertNotIn("max-height: 45%;", styles)
         self.assertIn(".zab-chat__model-select", styles)
         self.assertIn(".zab-chat__model-select:focus-visible", styles)
@@ -626,7 +692,7 @@ assert.throws(
         self.assertFalse(legacy_script.exists())
         version = manifest["version"]
         self.assertEqual(manifest["name"], "Zotero Pi Assistant")
-        self.assertEqual(version, "0.4.1-beta")
+        self.assertEqual(version, "0.4.2-beta")
         zotero_manifest = manifest["applications"]["zotero"]
         self.assertEqual(zotero_manifest["strict_max_version"], "9.0.*")
         self.assertEqual(
@@ -671,9 +737,9 @@ assert.throws(
             self.assertTrue(expected.issubset(names), sorted(expected - names))
             manifest = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
             self.assertEqual(manifest["name"], "Zotero Pi Assistant")
-            self.assertEqual(manifest["version"], "0.4.1-beta")
+            self.assertEqual(manifest["version"], "0.4.2-beta")
             bundle_manifest = json.loads(archive.read("bridge/windows-x64/bridge-manifest.json").decode("utf-8"))
-            self.assertEqual(bundle_manifest["bridge_version"], "0.4.1-beta")
+            self.assertEqual(bundle_manifest["bridge_version"], "0.4.2-beta")
             self.assertEqual(bundle_manifest["protocol_version"], 2)
             self.assertEqual(bundle_manifest["product_scope"], "zotero-pi-only")
             self.assertEqual(bundle_manifest["distribution"], "xpi-bundled")
@@ -682,7 +748,7 @@ assert.throws(
         updates = json.loads((ROOT / "updates.json").read_text(encoding="utf-8"))
         update = updates["addons"]["zotero-agent-bridge@local"]["updates"][0]
         self.assertEqual(update["version"], "0.3.5")
-        self.assertNotEqual(update["version"], manifest["version"], "0.4.1-beta is an unpublished release candidate")
+        self.assertNotEqual(update["version"], manifest["version"], "0.4.2-beta is an unpublished release candidate")
         self.assertEqual(
             update["update_link"],
             "https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v0.3.5-beta/zotero-agent-bridge-addon-0.3.5.xpi",
@@ -717,7 +783,7 @@ const manifest = {
   distribution: 'xpi-bundled',
   platform: 'windows',
   architecture: 'x64',
-  bridge_version: '0.4.1-beta',
+  bridge_version: '0.4.2-beta',
   entrypoint: 'zab-bridge/zab-bridge.exe',
   sentinel: '.zab-bundle-installed.json',
   files: [
@@ -772,11 +838,11 @@ fs.writeFileSync(path.join(installRoot, 'install-state.json'), JSON.stringify({
   pending_version: null,
   updated_at: '2026-01-01T00:00:00.000Z',
 }));
-const staleRoot = path.join(installRoot, '0.4.1-beta');
+const staleRoot = path.join(installRoot, '0.4.2-beta');
 fs.mkdirSync(staleRoot, { recursive: true });
 fs.writeFileSync(path.join(staleRoot, '.zab-bundle-installed.json'), JSON.stringify({
   sentinel_schema_version: 1,
-  bridge_version: '0.4.1-beta',
+  bridge_version: '0.4.2-beta',
   protocol_version: 2,
   product_scope: 'zotero-pi-only',
   manifest_sha256: 'stale-manifest-hash',
@@ -848,7 +914,7 @@ globalThis.Components = Components;
 (async () => {
   const manager = managerFactory.create({
     rootURI: pathToFileURL(addonRoot + '/').href,
-    addonVersion: '0.4.1-beta',
+    addonVersion: '0.4.2-beta',
     Services, IOUtils, PathUtils, Zotero,
     appendLog: (level, message, details) => logs.push({ level, message, details }),
   });
@@ -856,7 +922,7 @@ globalThis.Components = Components;
   assert.strictEqual(installed.reused, false);
   assert.deepStrictEqual(fs.readFileSync(installed.executable), exeBytes);
   assert.strictEqual(fs.existsSync(path.join(staleRoot, 'zab-bridge-placeholder.txt')), false, 'stale contents are quarantined away');
-  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.4.1-beta.invalid-'));
+  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.4.2-beta.invalid-'));
   assert.strictEqual(quarantined.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(installRoot, quarantined[0], 'zab-bridge-placeholder.txt'), 'utf8'), 'old install');
   const sentinel = JSON.parse(fs.readFileSync(path.join(installed.versionRoot, '.zab-bundle-installed.json'), 'utf8'));
@@ -870,7 +936,7 @@ globalThis.Components = Components;
   await manager.markLaunchSucceeded(installed);
   const establishedState = JSON.parse(fs.readFileSync(path.join(installRoot, 'install-state.json'), 'utf8'));
   assert.strictEqual(establishedState.protocol_floor, 2);
-  assert.strictEqual(establishedState.last_known_good, '0.4.1-beta');
+  assert.strictEqual(establishedState.last_known_good, '0.4.2-beta');
   assert.strictEqual(establishedState.last_known_good_protocol_version, 2);
   assert.strictEqual(establishedState.last_known_good_product_scope, 'zotero-pi-only');
   assert.ok(establishedState.pi_only_established_at);
