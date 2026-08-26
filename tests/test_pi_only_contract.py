@@ -82,18 +82,18 @@ class PiOnlyContractTest(unittest.TestCase):
         cls.retired = policy_routes(cls.policy, "retired_http_routes")
         cls.routes = application_routes()
 
-    def test_product_metadata_is_zotero_pi_assistant_041_beta(self) -> None:
+    def test_product_metadata_is_zotero_pi_assistant_042(self) -> None:
         manifest = json.loads((ROOT / "zotero_companion_addon" / "manifest.json").read_text(encoding="utf-8-sig"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         bootstrap = BOOTSTRAP_PATH.read_text(encoding="utf-8-sig")
         self.assertEqual(PRODUCT_NAME, "Zotero Pi Assistant")
         self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
-        self.assertEqual(BRIDGE_VERSION, "0.4.2-beta")
+        self.assertEqual(BRIDGE_VERSION, "0.4.2")
         self.assertEqual(manifest["name"], PRODUCT_NAME)
         self.assertEqual(manifest["version"], BRIDGE_VERSION)
         self.assertEqual(manifest["applications"]["zotero"]["id"], "zotero-agent-bridge@local")
         self.assertTrue(readme.startswith("# Zotero Pi Assistant"))
-        self.assertIn("**当前版本：0.4.2-beta**", readme)
+        self.assertIn("**当前版本：0.4.2**", readme)
         self.assertNotIn("syncSelectedNoteToObsidian", bootstrap)
         self.assertNotIn("Sync to Obsidian", bootstrap)
 

@@ -1,5 +1,5 @@
 param(
-  [string]$Version = '0.4.2-beta',
+  [string]$Version = '0.4.2',
   [switch]$BuildBridge
 )
 

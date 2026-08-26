@@ -1,6 +1,6 @@
 # Zotero Pi Assistant
 
-**当前版本：0.4.2-beta** · **支持 Zotero 7–9（推荐 Zotero 9）** · **当前发行平台：Windows x64**
+**当前版本：0.4.2** · **支持 Zotero 7–9（推荐 Zotero 9）** · **当前发行平台：Windows x64**
 
 Zotero Pi Assistant 是一个嵌入 Zotero 的本地文献阅读助手。它把当前论文的 PDF、书目信息、Zotero 笔记与批注组织成结构化上下文，交给 Pi CLI 完成问答，并将会话和整理结果保存到本地。
 
@@ -69,7 +69,7 @@ Model Provider
 
 ### 安装步骤
 
-1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.2-beta.xpi`。
+1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.2.xpi`。
 2. 在 Zotero 打开 **工具 → 插件 → Install Plugin From File…**。
 3. 选择 XPI 并重启 Zotero。
 4. 选中带本地 PDF 的论文，在条目侧栏或 PDF Reader 侧栏打开 **Pi 文献助手**。
@@ -77,7 +77,7 @@ Model Provider
 插件会自动校验并安装自带 Bridge 到：
 
 ```text
-%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.2-beta
+%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.2
 ```
 
 升级会保留 add-on ID、Bridge Token、Pi session 路径和文档 ID 规则。
@@ -136,7 +136,8 @@ Model Provider
 7. **图片限制**：每次最多 4 张图片，单张不超过 10 MiB，总大小不超过 20 MiB。
 8. **产品范围限制**：不提供公共 OpenAPI、通用 Zotero 自动化接口、MCP、Obsidian 同步或论文归类。
 9. **签名限制**：Bridge EXE 尚未进行 Authenticode 签名，Windows 可能显示来源或安全提示。
-10. **Beta 状态**：当前版本仍为 beta，建议在升级前备份 Zotero 数据和 `%USERPROFILE%\Zotero\zotero-agent-bridge`。
+
+升级前仍建议备份 Zotero 数据和 `%USERPROFILE%\Zotero\zotero-agent-bridge`。
 
 ## 构建与测试
 
@@ -145,13 +146,13 @@ Model Provider
 ```powershell
 py -3.12 -m pip install -e .
 py -3.12 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2-beta -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2 -BuildBridge
 ```
 
 主要输出：
 
 ```text
-dist\zotero-agent-bridge-addon-0.4.2-beta.xpi
+dist\zotero-agent-bridge-addon-0.4.2.xpi
 dist\zotero-agent-bridge-addon.xpi
 ```
 

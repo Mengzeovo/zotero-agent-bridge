@@ -692,12 +692,12 @@ assert.throws(
         self.assertFalse(legacy_script.exists())
         version = manifest["version"]
         self.assertEqual(manifest["name"], "Zotero Pi Assistant")
-        self.assertEqual(version, "0.4.2-beta")
+        self.assertEqual(version, "0.4.2")
         zotero_manifest = manifest["applications"]["zotero"]
         self.assertEqual(zotero_manifest["strict_max_version"], "9.0.*")
         self.assertEqual(
             zotero_manifest["update_url"],
-            "https://raw.githubusercontent.com/Mengzeovo/zotero-agent-bridge/main/updates.json",
+            "https://raw.githubusercontent.com/Mengzeovo/zotero-agent-bridge/master/updates.json",
         )
         version_nodes = [node.text for node in rdf_root.iter() if node.tag.endswith("version")]
         max_nodes = [node.text for node in rdf_root.iter() if node.tag.endswith("maxVersion")]
@@ -737,9 +737,9 @@ assert.throws(
             self.assertTrue(expected.issubset(names), sorted(expected - names))
             manifest = json.loads(archive.read("manifest.json").decode("utf-8-sig"))
             self.assertEqual(manifest["name"], "Zotero Pi Assistant")
-            self.assertEqual(manifest["version"], "0.4.2-beta")
+            self.assertEqual(manifest["version"], "0.4.2")
             bundle_manifest = json.loads(archive.read("bridge/windows-x64/bridge-manifest.json").decode("utf-8"))
-            self.assertEqual(bundle_manifest["bridge_version"], "0.4.2-beta")
+            self.assertEqual(bundle_manifest["bridge_version"], "0.4.2")
             self.assertEqual(bundle_manifest["protocol_version"], 2)
             self.assertEqual(bundle_manifest["product_scope"], "zotero-pi-only")
             self.assertEqual(bundle_manifest["distribution"], "xpi-bundled")
@@ -747,16 +747,12 @@ assert.throws(
 
         updates = json.loads((ROOT / "updates.json").read_text(encoding="utf-8"))
         update = updates["addons"]["zotero-agent-bridge@local"]["updates"][0]
-        self.assertEqual(update["version"], "0.3.5")
-        self.assertNotEqual(update["version"], manifest["version"], "0.4.2-beta is an unpublished release candidate")
+        self.assertEqual(update["version"], manifest["version"])
         self.assertEqual(
             update["update_link"],
-            "https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v0.3.5-beta/zotero-agent-bridge-addon-0.3.5.xpi",
+            f"https://github.com/Mengzeovo/zotero-agent-bridge/releases/download/v{manifest['version']}/zotero-agent-bridge-addon-{manifest['version']}.xpi",
         )
-        self.assertEqual(
-            update["update_hash"],
-            "sha512:37f819a3b683d649147853c97946d34a2bcd66fe6640214989928f4184dbc16d8b71c485581c2d60a2b6a59eb5e75327951805386f9b3e6e31c7db369d69699f",
-        )
+        self.assertEqual(update["update_hash"], f"sha512:{hashlib.sha512(XPI.read_bytes()).hexdigest()}")
 
     def test_bundle_manager_quarantines_invalid_install_and_reinstalls_in_node(self) -> None:
         script = r"""
@@ -783,7 +779,7 @@ const manifest = {
   distribution: 'xpi-bundled',
   platform: 'windows',
   architecture: 'x64',
-  bridge_version: '0.4.2-beta',
+  bridge_version: '0.4.2',
   entrypoint: 'zab-bridge/zab-bridge.exe',
   sentinel: '.zab-bundle-installed.json',
   files: [
@@ -838,11 +834,11 @@ fs.writeFileSync(path.join(installRoot, 'install-state.json'), JSON.stringify({
   pending_version: null,
   updated_at: '2026-01-01T00:00:00.000Z',
 }));
-const staleRoot = path.join(installRoot, '0.4.2-beta');
+const staleRoot = path.join(installRoot, '0.4.2');
 fs.mkdirSync(staleRoot, { recursive: true });
 fs.writeFileSync(path.join(staleRoot, '.zab-bundle-installed.json'), JSON.stringify({
   sentinel_schema_version: 1,
-  bridge_version: '0.4.2-beta',
+  bridge_version: '0.4.2',
   protocol_version: 2,
   product_scope: 'zotero-pi-only',
   manifest_sha256: 'stale-manifest-hash',
@@ -914,7 +910,7 @@ globalThis.Components = Components;
 (async () => {
   const manager = managerFactory.create({
     rootURI: pathToFileURL(addonRoot + '/').href,
-    addonVersion: '0.4.2-beta',
+    addonVersion: '0.4.2',
     Services, IOUtils, PathUtils, Zotero,
     appendLog: (level, message, details) => logs.push({ level, message, details }),
   });
@@ -922,7 +918,7 @@ globalThis.Components = Components;
   assert.strictEqual(installed.reused, false);
   assert.deepStrictEqual(fs.readFileSync(installed.executable), exeBytes);
   assert.strictEqual(fs.existsSync(path.join(staleRoot, 'zab-bridge-placeholder.txt')), false, 'stale contents are quarantined away');
-  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.4.2-beta.invalid-'));
+  const quarantined = fs.readdirSync(installRoot).filter((name) => name.startsWith('0.4.2.invalid-'));
   assert.strictEqual(quarantined.length, 1);
   assert.strictEqual(fs.readFileSync(path.join(installRoot, quarantined[0], 'zab-bridge-placeholder.txt'), 'utf8'), 'old install');
   const sentinel = JSON.parse(fs.readFileSync(path.join(installed.versionRoot, '.zab-bundle-installed.json'), 'utf8'));
@@ -936,7 +932,7 @@ globalThis.Components = Components;
   await manager.markLaunchSucceeded(installed);
   const establishedState = JSON.parse(fs.readFileSync(path.join(installRoot, 'install-state.json'), 'utf8'));
   assert.strictEqual(establishedState.protocol_floor, 2);
-  assert.strictEqual(establishedState.last_known_good, '0.4.2-beta');
+  assert.strictEqual(establishedState.last_known_good, '0.4.2');
   assert.strictEqual(establishedState.last_known_good_protocol_version, 2);
   assert.strictEqual(establishedState.last_known_good_product_scope, 'zotero-pi-only');
   assert.ok(establishedState.pi_only_established_at);
