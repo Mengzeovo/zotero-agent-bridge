@@ -26,6 +26,8 @@
     {"method": "POST", "path": "/assistant/session/thinking-level"},
     {"method": "GET", "path": "/assistant/session/status"},
     {"method": "POST", "path": "/assistant/session/save-note"},
+    {"method": "POST", "path": "/assistant/experience-note/update"},
+    {"method": "GET", "path": "/assistant/experience-note/jobs/{job_id}"},
     {"method": "POST", "path": "/assistant/session/abort"},
     {"method": "POST", "path": "/assistant/session/reset"}
   ],
@@ -91,7 +93,7 @@
   },
   "stage_2": {
     "release": "0.4.1-beta",
-    "http_behavior": "Transition routes are unregistered and return 404.",
+    "http_behavior": "Retired routes remain authenticated compatibility stubs, perform no side effects, and return the transition_error payload.",
     "command_behavior": "Retired queue command implementations and compatibility handlers are deleted.",
     "cli_behavior": "Retired entry points and scripts are deleted.",
     "rollback_behavior": "Rollback candidates below the Pi-only lifecycle protocol floor are rejected.",
@@ -102,6 +104,7 @@
     "%USERPROFILE%/Zotero/zotero-agent-bridge",
     "%USERPROFILE%/Zotero/zotero-agent-bridge/bridge.generated.json",
     "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-chat/session-index.json",
+    "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-chat/experience-note-index.json",
     "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-sessions"
   ]
 }

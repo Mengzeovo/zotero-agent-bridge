@@ -104,7 +104,9 @@ The add-on must continue to:
 - normalize `\(...\)` and `\[...\]` into Zotero-compatible math markup;
 - support inline math, block math, `aligned` environments, and TeX containing `<`, `>`, and `&`;
 - escape prose HTML while preserving TeX and code spans/blocks;
-- use Better Notes Markdown conversion when available and the built-in safe HTML fallback otherwise.
+- use Better Notes Markdown conversion when available and the built-in safe HTML fallback otherwise;
+- generate a concise AI title without writing internal prompts into the user session;
+- maintain one fully AI-managed experience note per parent item across all available sessions.
 
 ## 8. Private add-on/Bridge contract
 
@@ -130,6 +132,8 @@ These route/method pairs are the minimum currently consumed by the Zotero add-on
 - `POST /assistant/session/thinking-level`
 - `GET /assistant/session/status`
 - `POST /assistant/session/save-note`
+- `POST /assistant/experience-note/update`
+- `GET /assistant/experience-note/jobs/{job_id}`
 - `POST /assistant/session/abort`
 - `POST /assistant/session/reset`
 

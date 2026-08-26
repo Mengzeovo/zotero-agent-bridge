@@ -1,10 +1,10 @@
 # Zotero Pi Assistant
 
-**当前版本：0.4.1-beta**
+**当前版本：0.4.2-beta**
 
 Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它读取当前论文的本地 PDF、Zotero 子笔记与批注，提供可恢复的连续对话，并在用户确认后把最终回答保存为 Zotero Note。
 
-本项目只提供 Zotero 内置 Pi 文献助手。通用 Agent Bridge、公共 CRUD API、MCP 工具、Obsidian 同步、论文归类及其过渡兼容壳均已从 `0.4.1-beta` 物理删除；旧 HTTP 路径现在是普通的 `404 Not Found`。
+本项目只提供 Zotero 内置 Pi 文献助手。通用 Agent Bridge、公共 CRUD API、MCP 工具、Obsidian 同步和论文归类实现均已从 `0.4.1-beta` 物理删除；旧 HTTP 路径仅保留需要 Bridge Token、无副作用并返回 `410 feature_retired` 的兼容墓碑。
 
 ## 功能
 
@@ -14,12 +14,13 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 - 每篇论文独立保存 Pi session，支持历史列表、孤儿会话找回、恢复并继续提问。
 - Markdown、KaTeX 公式和代码渲染。
 - 复制公式时恢复原始 `$...$`、`$$...$$`、`\(...\)` 或 `\[...\]` LaTeX。
-- 用户确认后保存结构化 Zotero Note，并保留公式中的 `<`、`>`、`&`。
+- “保存问答”在用户确认后新建结构化 Zotero Note，由独立的无会话 Pi 生成不超过 15 个可见字符的标题，并保留公式中的 `<`、`>`、`&`。
+- “更新经验笔记”把原始会话增量整理为本地知识账本，再从知识单元、知识联系、认知修正和来源索引确定性重建唯一的 `Pi 经验笔记`。未变化问答不再调用 Pi；来源会话缺失后已提取知识继续保留并显示警告。
 - XPI 自带并管理 Windows x64 Bridge；普通用户不需要 Python 或仓库源码。
 
 ## 安装
 
-1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.1-beta.xpi`。
+1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.2-beta.xpi`。
 2. 在 Zotero 打开 **工具 → 插件 → Install Plugin From File…**。
 3. 选择 XPI 并重启 Zotero。
 4. 选中带本地 PDF 的论文，在 Item Pane 打开 **Pi 文献助手**。
@@ -27,7 +28,7 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 插件会校验并安装自带 Bridge 到：
 
 ```text
-%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.1-beta
+%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.2-beta
 ```
 
 受管数据继续使用稳定路径：
@@ -36,8 +37,12 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 %USERPROFILE%\Zotero\zotero-agent-bridge
 ├─ bridge.generated.json
 ├─ pi-chat\session-index.json
+├─ pi-chat\experience-note-index.json
+├─ pi-chat\experience-knowledge\*.json
 └─ pi-sessions\*.jsonl
 ```
+
+经验笔记使用三层数据模型：原始 Pi JSONL 是可追溯来源，知识账本保存问答级证据、知识单元、关系和来源状态，Zotero `Pi 经验笔记` 是可从账本重新渲染的阅读视图。来源会话丢失或损坏时，已经提取的学习成果不会静默消失；“强制重建”则只从当前可读取来源重新建立账本。超大账本的跨分区关系审计受调用预算约束；预算不足时会保留已验证关系、完成更新并显示明确警告，而不是无限调用或丢弃知识单元。
 
 升级不会更改 add-on ID `zotero-agent-bridge@local`、API Token、Pi session 路径或文档 ID 算法。
 
@@ -57,7 +62,7 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 - Bridge 只监听 loopback，并要求插件管理的 API Token。
 - Pi 使用 `--no-tools --no-skills --no-extensions --no-approve` 等限制参数启动。
 - PDF、笔记和批注被视为不可信来源材料。
-- 唯一 Zotero 写命令是专用 `create_assistant_note`，且由用户确认触发。
+- Zotero 写入仅允许专用 `create_assistant_note` 与带固定标记校验的 `upsert_assistant_experience_note`，且均由用户确认触发。
 - 旧 CRUD、MCP、Obsidian 和通用脚本已不存在；仅保留插件面板所需的私有 Pi 路由。
 
 ## 构建与测试
@@ -67,13 +72,13 @@ Zotero Pi Assistant 是运行在 Zotero Item Pane 内的 Pi 文献助手。它�
 ```powershell
 py -3.12 -m pip install -e .
 py -3.12 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.1-beta -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2-beta -BuildBridge
 ```
 
 主要输出：
 
 ```text
-dist\zotero-agent-bridge-addon-0.4.1-beta.xpi
+dist\zotero-agent-bridge-addon-0.4.2-beta.xpi
 dist\zotero-agent-bridge-addon.xpi
 ```
 
