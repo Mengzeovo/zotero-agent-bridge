@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zotero-pi-assistant"
-version = "0.4.1b0"
+version = "0.4.2b0"
 description = "Private Bridge runtime for the Zotero Pi Assistant add-on"
 requires-python = ">=3.12"
 dependencies = [
