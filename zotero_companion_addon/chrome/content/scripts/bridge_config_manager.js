@@ -85,7 +85,7 @@ var ZoteroAgentBridgeConfigManager = (() => {
       lifecycle_watchdog_interval_seconds: Number(legacy?.lifecycle_watchdog_interval_seconds) > 0
         ? Number(legacy.lifecycle_watchdog_interval_seconds)
         : 1,
-      user_agent: String(legacy?.user_agent || "ZoteroPiAssistant/0.4.1-beta"),
+      user_agent: String(legacy?.user_agent || "ZoteroPiAssistant/0.4.2-beta"),
     };
     const baseAttachment = resolveOptionalPath(legacy?.base_attachment_path, legacyBaseDir, PathUtils);
     if (baseAttachment) {
@@ -109,6 +109,31 @@ var ZoteroAgentBridgeConfigManager = (() => {
       idle_timeout_seconds: Number(legacyPi.idle_timeout_seconds) > 0 ? Number(legacyPi.idle_timeout_seconds) : 1800,
       max_context_chars: Number(legacyPi.max_context_chars) > 0 ? Number(legacyPi.max_context_chars) : 500000,
       poll_interval_ms: Number(legacyPi.poll_interval_ms) >= 100 ? Number(legacyPi.poll_interval_ms) : 300,
+      note_title_timeout_seconds: Number(legacyPi.note_title_timeout_seconds) > 0
+        ? Number(legacyPi.note_title_timeout_seconds)
+        : 20,
+      experience_timeout_enabled: legacyPi.experience_timeout_enabled === true,
+      experience_call_timeout_seconds: Number(legacyPi.experience_call_timeout_seconds) > 0
+        ? Number(legacyPi.experience_call_timeout_seconds)
+        : 600,
+      experience_total_timeout_seconds: Number(legacyPi.experience_total_timeout_seconds) >= Number(legacyPi.experience_call_timeout_seconds || 600)
+        ? Number(legacyPi.experience_total_timeout_seconds)
+        : 900,
+      experience_chunk_chars: Number(legacyPi.experience_chunk_chars) >= 10000
+        ? Number(legacyPi.experience_chunk_chars)
+        : 100000,
+      experience_extraction_chunk_chars: Number(legacyPi.experience_extraction_chunk_chars) >= 10000
+        ? Number(legacyPi.experience_extraction_chunk_chars)
+        : (Number(legacyPi.experience_chunk_chars) >= 10000 ? Number(legacyPi.experience_chunk_chars) : 100000),
+      experience_structure_max_chars: Number(legacyPi.experience_structure_max_chars) >= 10000
+        ? Number(legacyPi.experience_structure_max_chars)
+        : 250000,
+      experience_cross_link_max_calls: Number(legacyPi.experience_cross_link_max_calls) >= 0
+        && Number(legacyPi.experience_cross_link_max_calls) <= 64
+        ? Number(legacyPi.experience_cross_link_max_calls)
+        : 8,
+      experience_coverage_audit: legacyPi.experience_coverage_audit !== false,
+      experience_json_repair_attempts: Number(legacyPi.experience_json_repair_attempts) === 0 ? 0 : 1,
     };
     const customPrompt = resolveOptionalPath(legacyPi.system_prompt_path, legacyBaseDir, PathUtils);
     if (customPrompt && !/[\\/]config[\\/]literature-assistant\.md$/i.test(customPrompt)) {

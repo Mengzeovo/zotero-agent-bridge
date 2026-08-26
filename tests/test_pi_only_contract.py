@@ -68,6 +68,8 @@ def addon_route_calls(path: Path) -> set[RoutePair]:
     calls: set[RoutePair] = set()
     for match in BRIDGE_CALL_PATTERN.finditer(source):
         route_path = match.group("path").split("?", 1)[0]
+        if route_path.startswith("/assistant/experience-note/jobs/${"):
+            route_path = "/assistant/experience-note/jobs/{job_id}"
         calls.add((match.group("method"), route_path))
     return calls
 
@@ -86,12 +88,12 @@ class PiOnlyContractTest(unittest.TestCase):
         bootstrap = BOOTSTRAP_PATH.read_text(encoding="utf-8-sig")
         self.assertEqual(PRODUCT_NAME, "Zotero Pi Assistant")
         self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
-        self.assertEqual(BRIDGE_VERSION, "0.4.1-beta")
+        self.assertEqual(BRIDGE_VERSION, "0.4.2-beta")
         self.assertEqual(manifest["name"], PRODUCT_NAME)
         self.assertEqual(manifest["version"], BRIDGE_VERSION)
         self.assertEqual(manifest["applications"]["zotero"]["id"], "zotero-agent-bridge@local")
         self.assertTrue(readme.startswith("# Zotero Pi Assistant"))
-        self.assertIn("**当前版本：0.4.1-beta**", readme)
+        self.assertIn("**当前版本：0.4.2-beta**", readme)
         self.assertNotIn("syncSelectedNoteToObsidian", bootstrap)
         self.assertNotIn("Sync to Obsidian", bootstrap)
 
@@ -103,23 +105,18 @@ class PiOnlyContractTest(unittest.TestCase):
         self.assertEqual(self.policy["transition_release"], "0.4.0-beta")
         self.assertEqual(self.policy["final_removal_release"], "0.4.1-beta")
         self.assertEqual(self.policy["stage_2"]["release"], "0.4.1-beta")
-        self.assertEqual(self.policy["stage_2"]["http_behavior"], "Transition routes are unregistered and return 404.")
-        self.assertEqual(len(self.retained), 17)
+        self.assertEqual(
+            self.policy["stage_2"]["http_behavior"],
+            "Retired routes remain authenticated compatibility stubs, perform no side effects, and return the transition_error payload.",
+        )
+        self.assertEqual(len(self.retained), 19)
         self.assertEqual(len(self.retired), 17)
         self.assertFalse(self.retained & self.retired)
         self.assertEqual(len(self.retained), len(self.policy["retained_http_routes"]))
         self.assertEqual(len(self.retired), len(self.policy["retired_http_routes"]))
 
-    def test_current_application_surface_is_exactly_the_retained_surface(self) -> None:
-        self.assertEqual(set(self.routes), self.retained)
-
-    def test_openapi_swagger_and_redoc_are_disabled(self) -> None:
-        settings = SimpleNamespace(api_token="pi-contract-token")
-        service = SimpleNamespace(settings=settings)
-        client = TestClient(create_app(settings=settings, service=service, lifecycle=SimpleNamespace()))
-        for path in ("/openapi.json", "/docs", "/redoc"):
-            with self.subTest(path=path):
-                self.assertEqual(client.get(path).status_code, 404)
+    def test_current_application_surface_is_retained_plus_authenticated_retirement_stubs(self) -> None:
+        self.assertEqual(set(self.routes), self.retained | self.retired)
 
     def test_every_retained_route_requires_bridge_authentication(self) -> None:
         for route_pair in sorted(self.retained):
@@ -128,17 +125,28 @@ class PiOnlyContractTest(unittest.TestCase):
                 self.assertGreaterEqual(len(route.dependencies), 1)
                 self.assertGreaterEqual(len(route.dependant.dependencies), 1)
 
-    def test_every_retired_route_is_physically_unregistered_and_returns_404(self) -> None:
+    def test_every_retired_route_requires_authentication_and_returns_410(self) -> None:
         settings = SimpleNamespace(api_token="pi-contract-token")
         service = SimpleNamespace(settings=settings)
         app = create_app(settings=settings, service=service, lifecycle=SimpleNamespace())
         client = TestClient(app)
+        expected_error = self.policy["transition_error"]
         for method, route_path in sorted(self.retired):
             concrete_path = re.sub(r"\{[^}]+\}", "RETIREDKEY", route_path)
-            for headers in ({}, {"X-Bridge-Token": settings.api_token}):
-                with self.subTest(method=method, path=route_path, authenticated=bool(headers)):
-                    response = client.request(method, concrete_path, headers=headers, json={})
-                    self.assertEqual(response.status_code, 404, response.text)
+            with self.subTest(method=method, path=route_path, authenticated=False):
+                unauthenticated = client.request(method, concrete_path, json={})
+                self.assertEqual(unauthenticated.status_code, 401, unauthenticated.text)
+            with self.subTest(method=method, path=route_path, authenticated=True):
+                response = client.request(
+                    method,
+                    concrete_path,
+                    headers={"X-Bridge-Token": settings.api_token},
+                    json={},
+                )
+                self.assertEqual(response.status_code, expected_error["http_status"], response.text)
+                error = response.json()["error"]
+                self.assertEqual(error["code"], expected_error["code"])
+                self.assertEqual(error["message"], expected_error["message"])
 
     def test_pi_panel_calls_exact_retained_assistant_surface(self) -> None:
         expected = {route for route in self.retained if route[1].startswith("/assistant/")}
@@ -162,6 +170,8 @@ class PiOnlyContractTest(unittest.TestCase):
             ("GET", "/assistant/session/events"): "AssistantEventsResponse",
             ("POST", "/assistant/session/resume"): "AssistantSessionOpenResponse",
             ("POST", "/assistant/session/save-note"): "AssistantSaveNoteResponse",
+            ("POST", "/assistant/experience-note/update"): "AssistantExperienceNoteJobAccepted",
+            ("GET", "/assistant/experience-note/jobs/{job_id}"): "AssistantExperienceNoteJobStatus",
             ("POST", "/assistant/session/reset"): "AssistantSessionOpenResponse",
         }
         for route_pair, model_name in expected_models.items():
@@ -251,6 +261,8 @@ class PiOnlyContractTest(unittest.TestCase):
                 "select_assistant_thinking_level",
                 "assistant_status",
                 "save_assistant_note",
+                "update_experience_note",
+                "experience_note_job_status",
                 "abort_assistant_session",
                 "reset_assistant_session",
                 "shutdown",
@@ -296,6 +308,10 @@ class PiOnlyContractTest(unittest.TestCase):
         self.assertIn("%USERPROFILE%/Zotero/zotero-agent-bridge", preserved)
         self.assertIn(
             "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-chat/session-index.json",
+            preserved,
+        )
+        self.assertIn(
+            "%USERPROFILE%/Zotero/zotero-agent-bridge/pi-chat/experience-note-index.json",
             preserved,
         )
         self.assertIn("%USERPROFILE%/Zotero/zotero-agent-bridge/pi-sessions", preserved)

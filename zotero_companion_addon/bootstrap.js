@@ -22,9 +22,11 @@ async function convertMarkdownNoteHTML(payload, betterNotes) {
   }
 }
 
+const EXPERIENCE_NOTE_MARKER = "Zotero Pi Assistant · Experience Note v1";
 const PI_ONLY_LIFECYCLE_PROTOCOL_VERSION = 2;
+const TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION = 1;
 const PI_ONLY_PRODUCT_SCOPE = "zotero-pi-only";
-const PI_ONLY_BRIDGE_DISTRIBUTION = "xpi-bundled";
+const SUPPORTED_BRIDGE_DISTRIBUTIONS = Object.freeze(["xpi-bundled", "source"]);
 
 class BridgeProtocolError extends Error {
   constructor(code, message, details = null) {
@@ -45,10 +47,22 @@ function classifyBridgeLifecycle(lifecycle, {
     throw new BridgeProtocolError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
   }
   if (lifecycle.protocol_version === undefined || lifecycle.protocol_version === null) {
-    throw new BridgeProtocolError(
-      "bridge_protocol_incompatible",
-      "Bridge did not report the required Pi-only lifecycle protocol version",
-    );
+    if (bundled) {
+      throw new BridgeProtocolError(
+        "bridge_protocol_incompatible",
+        "Bundled Bridge did not report a lifecycle protocol version",
+      );
+    }
+    return {
+      compatible: true,
+      legacy: true,
+      transitional: true,
+      piOnly: false,
+      protocolVersion: 0,
+      distribution: "legacy-python",
+      bridgeVersion: String(lifecycle.bridge_version || ""),
+      productScope: "legacy-unknown",
+    };
   }
   if (!Number.isInteger(Number(lifecycle.pid))) {
     throw new BridgeProtocolError("bridge_protocol_invalid", "Bridge lifecycle response is invalid");
@@ -57,11 +71,11 @@ function classifyBridgeLifecycle(lifecycle, {
   const distribution = String(lifecycle.distribution || "");
   const bridgeVersion = String(lifecycle.bridge_version || "");
   const productScope = String(lifecycle.product_scope || "");
-  if (
-    protocolVersion !== PI_ONLY_LIFECYCLE_PROTOCOL_VERSION
-    || !bridgeVersion
-    || distribution !== PI_ONLY_BRIDGE_DISTRIBUTION
-  ) {
+  const supportedProtocol = (
+    protocolVersion === PI_ONLY_LIFECYCLE_PROTOCOL_VERSION
+    || protocolVersion === TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION
+  );
+  if (!supportedProtocol || !bridgeVersion || !SUPPORTED_BRIDGE_DISTRIBUTIONS.includes(distribution)) {
     throw new BridgeProtocolError(
       "bridge_protocol_incompatible",
       "Bridge lifecycle protocol or distribution is unsupported",
@@ -73,7 +87,7 @@ function classifyBridgeLifecycle(lifecycle, {
       },
     );
   }
-  if (productScope !== expectedProductScope) {
+  if (protocolVersion === PI_ONLY_LIFECYCLE_PROTOCOL_VERSION && productScope !== expectedProductScope) {
     throw new BridgeProtocolError(
       "bridge_protocol_incompatible",
       "Bridge lifecycle product scope is unsupported",
@@ -101,15 +115,16 @@ function classifyBridgeLifecycle(lifecycle, {
       },
     );
   }
+  const piOnly = protocolVersion === PI_ONLY_LIFECYCLE_PROTOCOL_VERSION;
   return {
     compatible: true,
-    legacy: false,
-    transitional: false,
-    piOnly: true,
+    legacy: !piOnly,
+    transitional: !piOnly,
+    piOnly,
     protocolVersion,
     distribution,
     bridgeVersion,
-    productScope,
+    productScope: piOnly ? productScope : (productScope || "legacy-agent-bridge"),
   };
 }
 
@@ -137,7 +152,7 @@ async function writeBootstrapLog(message, details) {
 }
 
 function buildZoteroAgentBridge(rootURI) {
-  const ADDON_VERSION = "0.4.1-beta";
+  const ADDON_VERSION = "0.4.2-beta";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const DEFAULT_BRIDGE_HOST = "127.0.0.1";
@@ -359,8 +374,8 @@ function buildZoteroAgentBridge(rootURI) {
   function classifyLifecycle(lifecycle, { bundled = false } = {}) {
     return classifyBridgeLifecycle(lifecycle, {
       bundled,
-      expectedBundleVersion: state.bridgeBundleInfo?.manifest?.bridge_version || ADDON_VERSION,
-      expectedBundleProtocolVersion: state.bridgeBundleInfo?.manifest?.protocol_version ?? PI_ONLY_LIFECYCLE_PROTOCOL_VERSION,
+      expectedBundleVersion: state.bridgeBundleInfo?.manifest?.bridge_version || null,
+      expectedBundleProtocolVersion: state.bridgeBundleInfo?.manifest?.protocol_version ?? null,
       expectedProductScope: state.bridgeBundleInfo?.manifest?.product_scope || PI_ONLY_PRODUCT_SCOPE,
     });
   }
@@ -570,23 +585,26 @@ function buildZoteroAgentBridge(rootURI) {
       const existing = await checkBridgeHealth();
       if (existing) {
         const lifecycle = existing.lifecycle || existing;
-        classifyLifecycle(lifecycle, { bundled: true });
+        const compatibility = classifyLifecycle(lifecycle);
         const stillOwned = Boolean(
           lifecycle.managed
           && state.bridgeOwnerId
           && state.bridgeOwnerToken
           && lifecycle.owner_id === state.bridgeOwnerId
         );
-        if (!stillOwned) {
-          throw new BridgeError(
-            "bridge_owner_mismatch",
-            "A Bridge is already running but is not owned by this Zotero add-on instance",
-            { owner_id: lifecycle.owner_id || null },
-          );
-        }
         state.bridgeState = "ready";
-        state.bridgeOwnership = "owned";
-        state.bridgeLastError = null;
+        state.bridgeOwnership = stillOwned ? "owned" : "shared";
+        if (!stillOwned) {
+          state.bridgeOwnerId = null;
+          state.bridgeOwnerToken = null;
+        }
+        state.bridgeLastError = compatibility.legacy
+          ? {
+              code: "bridge_legacy_shared",
+              message: "Using a compatible legacy shared Bridge without protocol metadata",
+              details: null,
+            }
+          : null;
         return existing;
       }
       if (bundleInstallError) {
@@ -668,19 +686,23 @@ function buildZoteroAgentBridge(rootURI) {
     }
   }
 
-  async function bridgeRequest(method, path, payload = null) {
+  async function bridgeRequest(method, path, payload = null, options = {}) {
     if (state.bridgeState !== "ready") {
       await ensureBridgeAvailable();
     }
     try {
-      return await rawBridgeRequest(method, path, payload);
+      return await rawBridgeRequest(method, path, payload, options);
     } catch (error) {
-      if (!(error instanceof BridgeError) || error.code !== "bridge_unreachable") {
+      if (
+        options.retryOnUnreachable === false
+        || !(error instanceof BridgeError)
+        || error.code !== "bridge_unreachable"
+      ) {
         throw error;
       }
       state.bridgeState = "unavailable";
       await ensureBridgeAvailable({ force: true });
-      return await rawBridgeRequest(method, path, payload);
+      return await rawBridgeRequest(method, path, payload, options);
     }
   }
 
@@ -938,6 +960,8 @@ function buildZoteroAgentBridge(rootURI) {
     switch (request.command) {
       case "create_assistant_note":
         return await handleCreateAssistantNote(request);
+      case "upsert_assistant_experience_note":
+        return await handleUpsertAssistantExperienceNote(request);
       default:
         throw new BridgeError("unsupported_command", `Unsupported command: ${request.command}`);
     }
@@ -972,6 +996,78 @@ function buildZoteroAgentBridge(rootURI) {
     return await createAssistantNoteItem(request);
   }
 
+  async function handleUpsertAssistantExperienceNote(request) {
+    const payload = request.payload;
+    if (!/^[0-9a-f]{64}$/i.test(String(payload.document_id || ""))) {
+      throw new BridgeError("invalid_request", "Assistant document_id must be a SHA-256 hex digest");
+    }
+    if (!/^[0-9a-f]{64}$/i.test(String(payload.context_fingerprint || ""))) {
+      throw new BridgeError("invalid_request", "Assistant context_fingerprint must be a SHA-256 hex digest");
+    }
+    if (payload.marker !== EXPERIENCE_NOTE_MARKER) {
+      throw new BridgeError("invalid_request", "Experience note marker is invalid");
+    }
+    return await upsertAssistantExperienceNoteItem(request);
+  }
+
+  function experienceHTML(html) {
+    return `<p><small>${EXPERIENCE_NOTE_MARKER}</small></p>${String(html || "")}`;
+  }
+
+  async function findExperienceNote(parent, requestedKey) {
+    if (requestedKey) {
+      const requested = Zotero.Items.getByLibraryAndKey(parent.libraryID, String(requestedKey));
+      if (
+        requested
+        && requested.isNote
+        && requested.isNote()
+        && requested.parentID === parent.id
+        && String(requested.getNote() || "").includes(EXPERIENCE_NOTE_MARKER)
+      ) {
+        return requested;
+      }
+    }
+    const matches = [];
+    for (const noteID of parent.getNotes()) {
+      const note = Zotero.Items.get(noteID);
+      if (note && note.isNote && note.isNote() && String(note.getNote() || "").includes(EXPERIENCE_NOTE_MARKER)) {
+        matches.push(note);
+      }
+    }
+    if (matches.length > 1) {
+      throw new BridgeError("experience_note_conflict", "Multiple Pi experience notes exist for this Zotero item", {
+        item_key: parent.key,
+        note_keys: matches.map((note) => note.key),
+      });
+    }
+    return matches[0] || null;
+  }
+
+  async function upsertAssistantExperienceNoteItem(request) {
+    const payload = request.payload;
+    const parent = await getItemByKey(payload.item_key, payload.library_id);
+    const converted = await convertMarkdownNoteHTML(payload, Zotero.BetterNotes);
+    let note = await findExperienceNote(parent, payload.note_key);
+    const created = !note;
+    if (!note) {
+      note = new Zotero.Item("note");
+      note.libraryID = parent.libraryID;
+      note.parentID = parent.id;
+      await note.saveTx();
+    }
+    note.setNote(experienceHTML(converted.html));
+    await note.saveTx();
+    return buildSuccessResponse(request.request_id, {
+      library_id: parent.libraryID,
+      item_key: parent.key,
+      attachment_key: null,
+      note_key: note.key,
+      sync_status: payload.sync_status || "synced",
+      version: note.version,
+      created,
+    });
+  }
+
   async function createAssistantNoteItem(request) {
     const payload = request.payload;
     const parent = await getItemByKey(payload.item_key, payload.library_id);
@@ -1004,10 +1100,33 @@ function buildZoteroAgentBridge(rootURI) {
   }
 
   function resolveLibraryID(libraryID) {
-    if (libraryID === undefined || libraryID === null || libraryID === 0) {
+    if (libraryID === undefined || libraryID === null || Number(libraryID) === 0) {
       return Zotero.Libraries.userLibraryID;
     }
-    return libraryID;
+    const numericID = Number(libraryID);
+    if (!Number.isFinite(numericID)) {
+      return libraryID;
+    }
+    try {
+      const currentUserID = Number(Zotero.Users?.getCurrentUserID?.());
+      if (Number.isFinite(currentUserID) && numericID === currentUserID) {
+        return Zotero.Libraries.userLibraryID;
+      }
+    } catch (_) {}
+    try {
+      if (Zotero.Libraries.get(numericID)) {
+        return numericID;
+      }
+    } catch (_) {}
+    try {
+      for (const entry of Zotero.Libraries.getAll?.() || []) {
+        const library = typeof entry === "number" ? Zotero.Libraries.get(entry) : entry;
+        if (library && Number(library.groupID) === numericID) {
+          return library.libraryID;
+        }
+      }
+    } catch (_) {}
+    return numericID;
   }
 
   async function getItemByKey(itemKey, libraryID) {
@@ -1180,8 +1299,8 @@ if (typeof module !== "undefined" && module.exports) {
       convertMarkdownNoteHTML,
       classifyBridgeLifecycle,
       PI_ONLY_LIFECYCLE_PROTOCOL_VERSION,
+      TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION,
       PI_ONLY_PRODUCT_SCOPE,
-      PI_ONLY_BRIDGE_DISTRIBUTION,
     },
   };
 }

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -23,6 +25,53 @@ DOCUMENT_ID = "d" * 64
 CONTEXT_FINGERPRINT = "f" * 64
 
 
+class FakeGenerator:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.error: BridgeError | None = None
+        self.title = "AI生成短标题"
+        self.experience = "## 核心认识\n\n归纳后的经验。"
+        self.close_calls = 0
+        self.before_generate = None
+
+    def generate(self, prompt: str, **kwargs: Any) -> str:
+        self.calls.append({"prompt": prompt, **kwargs})
+        if self.before_generate:
+            self.before_generate()
+        if self.error:
+            raise self.error
+        system_prompt = str(kwargs.get("system_prompt") or "")
+        if system_prompt.startswith("你是学术问答标题编辑"):
+            return self.title
+        source = prompt.split("<ZAB_EXPERIENCE_SOURCE>\n", 1)[1].split("\n</ZAB_EXPERIENCE_SOURCE>", 1)[0]
+        payload = json.loads(source)
+        if system_prompt.startswith("你是研究学习成果提取器"):
+            evidence = [
+                {
+                    "source_exchange_id": exchange["source_exchange_id"],
+                    "kind": "concept",
+                    "title": "核心认识",
+                    "content": self.experience if exchange.get("answer") is not None else str(exchange.get("content_fragment") or ""),
+                    "formulas": [],
+                    "steps": [],
+                    "examples": [],
+                    "conditions": [],
+                    "limitations": [],
+                    "open_questions": [],
+                }
+                for exchange in payload["exchanges"]
+            ]
+            return json.dumps({"evidence": evidence, "no_knowledge_exchange_ids": []}, ensure_ascii=False)
+        if system_prompt.startswith("你是学习成果遗漏审计器"):
+            ids = [exchange["source_exchange_id"] for exchange in payload["exchanges"]]
+            return json.dumps({"evidence": [], "no_knowledge_exchange_ids": ids}, ensure_ascii=False)
+        unit_ids = [unit["unit_id"] for unit in payload.get("units", [])]
+        return json.dumps({"merge_groups": [], "sections": [{"title": "核心概念", "unit_ids": unit_ids}], "relations": []}, ensure_ascii=False)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 class FakeAddonClient:
     def status(self) -> dict[str, Any]:
         return {"ready": True, "fresh": True}
@@ -42,25 +91,30 @@ class FakeWriter:
         self.calls.append((command, dict(payload)))
         if self.error:
             raise self.error
-        if command != "create_assistant_note":
+        if command not in {"create_assistant_note", "upsert_assistant_experience_note"}:
             raise AssertionError(f"Unexpected write command: {command} {payload}")
-        note_key = f"NOTE{len(self.calls):04d}"
+        existing_key = payload.get("note_key") if command == "upsert_assistant_experience_note" else None
+        note_key = str(existing_key or f"NOTE{len(self.calls):04d}")
         item_key = str(payload["item_key"])
         note_html = str(payload.get("note_html") or "")
-        self.local_client.bundle["notes"].append(
-            {
-                "library_id": 7,
-                "item_key": item_key,
-                "attachment_key": None,
-                "note_key": note_key,
-                "title": "Pi 阅读助手记录",
-                "pdf_path": None,
-                "checksum": None,
-                "updated_at": "2026-08-18T00:00:00+00:00",
-                "sync_status": "synced",
-                "note_html": note_html,
-            }
-        )
+        existing_note = next((note for note in self.local_client.bundle["notes"] if note.get("note_key") == note_key), None)
+        if existing_note:
+            existing_note["note_html"] = note_html
+        else:
+            self.local_client.bundle["notes"].append(
+                {
+                    "library_id": 7,
+                    "item_key": item_key,
+                    "attachment_key": None,
+                    "note_key": note_key,
+                    "title": "Pi 阅读助手记录",
+                    "pdf_path": None,
+                    "checksum": None,
+                    "updated_at": "2026-08-18T00:00:00+00:00",
+                    "sync_status": "synced",
+                    "note_html": note_html,
+                }
+            )
         return {
             "library_id": 7,
             "item_key": item_key,
@@ -68,6 +122,7 @@ class FakeWriter:
             "note_key": note_key,
             "sync_status": "synced",
             "version": 2,
+            "created": not bool(existing_key),
         }
 
 
@@ -176,6 +231,11 @@ class FakePiChatManager:
         self.history_calls: list[tuple[str, Path, str | int | None]] = []
         self.resume_calls: list[tuple[str, Path, str | int | None, str]] = []
         self.resume_error: BridgeError | None = None
+        self.generation = 1
+        self.session_file = "fake-session.jsonl"
+        self.item_session_source_calls: list[tuple[str, str | int | None]] = []
+        self.source_discovery_gate: threading.Event | None = None
+        self.source_discovery_started = threading.Event()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -187,6 +247,8 @@ class FakePiChatManager:
             "pdf_path": str(self.open_calls[-1][1]) if self.running and self.open_calls else None,
             "context_fingerprint": self.context_fingerprint,
             "last_cursor": self.last_cursor,
+            "generation": self.generation if self.running else None,
+            "session_file": self.session_file if self.running else None,
         }
 
     def open_item(
@@ -243,6 +305,14 @@ class FakePiChatManager:
             "item_key": ITEM_KEY if self.running else None,
             "document_id": DOCUMENT_ID if self.running else None,
         }
+
+    def list_item_session_sources(self, item_key: str, *, library_id: str | int | None = None) -> list[dict[str, Any]]:
+        self.item_session_source_calls.append((item_key, library_id))
+        self.source_discovery_started.set()
+        if self.source_discovery_gate is not None:
+            self.source_discovery_gate.wait(timeout=2)
+        sessions = self.history_listing.get("sessions") or []
+        return [dict(session) for session in sessions]
 
     def get_messages(self) -> dict[str, Any]:
         return {
@@ -392,6 +462,7 @@ class AssistantHttpTest(unittest.TestCase):
         self.pi_chat = FakePiChatManager()
         self.context_builder = FakeReadingContextBuilder(self.pdf_path)
         self.writer = FakeWriter(self.local)
+        self.generator = FakeGenerator()
         self.service = self._make_service(self.settings)
         self.client = TestClient(create_app(settings=self.settings, service=self.service))
         self.client.__enter__()
@@ -407,6 +478,7 @@ class AssistantHttpTest(unittest.TestCase):
             local_client=self.local,
             writer=self.writer,
             pi_chat=self.pi_chat,
+            pi_generator=self.generator,
             reading_context_builder=self.context_builder,
         )
 
@@ -650,7 +722,8 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertEqual(self.pi_chat.events, [])
 
         closed = self.client.post("/assistant/session/close", headers=self.headers)
-        self.assertEqual(closed.status_code, 404)
+        self.assertEqual(closed.status_code, 410)
+        self.assertEqual(closed.json()["error"]["code"], "feature_retired")
         status = self.client.get("/assistant/session/status", headers=self.headers)
         self.assertTrue(status.json()["context_prepared"])
 
@@ -786,6 +859,49 @@ class AssistantHttpTest(unittest.TestCase):
         self.assertNotIn("<img", markdown)
         self.assertNotIn("SECRET FULL CONTEXT", markdown)
         self.assertNotIn("You are a literature assistant", markdown)
+
+    def test_save_note_generates_short_ai_title_falls_back_and_revalidates_session(self) -> None:
+        self.assertEqual(self._open().status_code, 200)
+        question = "为什么条件概率密度要这样变换"
+        answer = "因为变量缩放后需要使用雅可比修正概率密度。"
+        self.pi_chat.messages = [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer, "stopReason": "stop"},
+        ]
+        self.generator.title = "### “这是一个超过十五个字符的AI自动生成标题示例”"
+        generated = self.client.post(
+            "/assistant/session/save-note",
+            headers=self.headers,
+            json=self._save_payload(answer, question),
+        )
+        self.assertEqual(generated.status_code, 200, generated.text)
+        generated_payload = generated.json()
+        self.assertEqual(generated_payload["title_source"], "ai")
+        self.assertLessEqual(len(generated_payload["note_title"]), 15)
+        self.assertTrue(str(self.writer.calls[-1][1]["markdown"]).startswith(f"# {generated_payload['note_title']}\n"))
+
+        self.generator.error = BridgeError(503, "pi_generation_failed", "temporary")
+        fallback = self.client.post(
+            "/assistant/session/save-note",
+            headers=self.headers,
+            json=self._save_payload(answer, question),
+        )
+        self.assertEqual(fallback.status_code, 200, fallback.text)
+        self.assertEqual(fallback.json()["title_source"], "fallback")
+        self.assertEqual(fallback.json()["note_title"], question[:15])
+
+        self.generator.error = None
+        previous_writes = len(self.writer.calls)
+        self.generator.before_generate = lambda: setattr(self.pi_chat, "generation", 2)
+        changed = self.client.post(
+            "/assistant/session/save-note",
+            headers=self.headers,
+            json=self._save_payload(answer, question),
+        )
+        self.assertEqual(changed.status_code, 409)
+        self.assertEqual(changed.json()["error"]["code"], "assistant_session_changed")
+        self.assertEqual(len(self.writer.calls), previous_writes)
+        self.generator.before_generate = None
 
     def test_save_note_preserves_math_operators_while_escaping_prose_html(self) -> None:
         self.assertEqual(self._open().status_code, 200)
@@ -976,7 +1092,8 @@ Keep code `\(literal\)` unchanged.
         self.assertTrue(first.json()["context_injected"])
 
         retired_close = self.client.post("/assistant/session/close", headers=self.headers)
-        self.assertEqual(retired_close.status_code, 404)
+        self.assertEqual(retired_close.status_code, 410)
+        self.assertEqual(retired_close.json()["error"]["code"], "feature_retired")
         resumed = self._open()
         self.assertEqual(resumed.status_code, 200)
         self.assertFalse(resumed.json()["context_injection_required"])
@@ -1183,6 +1300,182 @@ Keep code `\(literal\)` unchanged.
         )
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing.json()["error"]["code"], "pi_session_not_found")
+
+    def test_experience_note_job_aggregates_available_sessions_and_reuses_note(self) -> None:
+        self.local.bundle["title"] = '<img src=x onerror="alert(1)"> Experience Paper'
+        self.generator.experience = "## 核心认识\n\n<img src=x onerror=alert(2)>\n\n公式 $Y>\\theta$。"
+        session_file = self._write_session_jsonl(
+            "experience.jsonl",
+            [
+                {
+                    "type": "message",
+                    "id": "u1",
+                    "parentId": None,
+                    "message": {"role": "user", "content": "经验问题"},
+                },
+                {
+                    "type": "message",
+                    "id": "a1",
+                    "parentId": "u1",
+                    "message": {"role": "assistant", "content": "经验回答", "stopReason": "stop"},
+                },
+            ],
+        )
+        self.pi_chat.history_listing = {
+            "document_id": DOCUMENT_ID,
+            "sessions": [
+                {"session_file": str(session_file), "available": True},
+                {"session_file": str(self.root / "missing.jsonl"), "available": False},
+            ],
+        }
+        self.assertEqual(self._open().status_code, 200)
+        scope = {
+            "item_key": ITEM_KEY,
+            "attachment_key": ATTACHMENT_KEY,
+            "context_fingerprint": CONTEXT_FINGERPRINT,
+            "document_id": DOCUMENT_ID,
+        }
+
+        accepted = self.client.post(
+            "/assistant/experience-note/update",
+            headers=self.headers,
+            json=scope,
+        )
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        job_id = accepted.json()["job_id"]
+        deadline = time.time() + 3
+        status = None
+        while time.time() < deadline:
+            status = self.client.get(
+                f"/assistant/experience-note/jobs/{job_id}",
+                headers=self.headers,
+            ).json()
+            if status["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status["status"], "completed", status)
+        self.assertEqual(status["session_count"], 1)
+        self.assertEqual(status["exchange_count"], 1)
+        self.assertEqual(status["skipped_session_count"], 1)
+        self.assertEqual(status["new_exchange_count"], 1)
+        self.assertEqual(status["reused_exchange_count"], 0)
+        self.assertEqual(status["knowledge_unit_count"], 1)
+        self.assertGreaterEqual(status["ai_call_count"], 2)
+        self.assertEqual(self.writer.calls[-1][0], "upsert_assistant_experience_note")
+        experience_markdown = str(self.writer.calls[-1][1]["markdown"])
+        experience_html = str(self.writer.calls[-1][1]["note_html"])
+        self.assertNotIn("<img", experience_markdown)
+        self.assertNotIn("<img", experience_html)
+        self.assertIn("&lt;img", experience_markdown)
+        self.assertIn("$Y>\\theta$", experience_markdown)
+        first_note_key = status["note_key"]
+        generation_calls = len(self.generator.calls)
+        self.assertTrue(all(call.get("thinking") == "low" for call in self.generator.calls))
+        self.assertTrue(all(call.get("timeout_seconds") is None for call in self.generator.calls))
+        note = next(note for note in self.local.bundle["notes"] if note["note_key"] == first_note_key)
+        note["note_html"] = "manual edit that may be overwritten"
+
+        accepted_again = self.client.post(
+            "/assistant/experience-note/update",
+            headers=self.headers,
+            json=scope,
+        )
+        second_job = accepted_again.json()["job_id"]
+        deadline = time.time() + 3
+        second_status = None
+        while time.time() < deadline:
+            second_status = self.client.get(
+                f"/assistant/experience-note/jobs/{second_job}",
+                headers=self.headers,
+            ).json()
+            if second_status["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(second_status["status"], "completed", second_status)
+        self.assertEqual(second_status["note_key"], first_note_key)
+        self.assertFalse(second_status["created"])
+        self.assertEqual(second_status["update_mode"], "up_to_date")
+        self.assertEqual(second_status["ai_call_count"], 0)
+        self.assertEqual(len(self.generator.calls), generation_calls)
+        self.assertNotEqual(note["note_html"], "manual edit that may be overwritten")
+        self.assertEqual(self.writer.calls[-1][1]["note_key"], first_note_key)
+
+        force_scope = {**scope, "force_rebuild": True}
+        forced = self.client.post("/assistant/experience-note/update", headers=self.headers, json=force_scope)
+        forced_job = forced.json()["job_id"]
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            forced_status = self.client.get(
+                f"/assistant/experience-note/jobs/{forced_job}", headers=self.headers
+            ).json()
+            if forced_status["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(forced_status["status"], "completed", forced_status)
+        self.assertEqual(forced_status["update_mode"], "full_rebuild")
+        self.assertEqual(forced_status["note_key"], first_note_key)
+
+        missing_job = self.client.get(
+            "/assistant/experience-note/jobs/not-found",
+            headers=self.headers,
+        )
+        self.assertEqual(missing_job.status_code, 404)
+
+    def test_experience_update_accepts_before_background_source_discovery_finishes(self) -> None:
+        session_file = self._write_session_jsonl(
+            "slow-discovery.jsonl",
+            [
+                {"type": "message", "id": "u1", "parentId": None, "message": {"role": "user", "content": "Q"}},
+                {"type": "message", "id": "a1", "parentId": "u1", "message": {"role": "assistant", "content": "A", "stopReason": "stop"}},
+            ],
+        )
+        self.pi_chat.history_listing = {
+            "document_id": DOCUMENT_ID,
+            "sessions": [{"session_file": str(session_file), "available": True}],
+        }
+        self.pi_chat.source_discovery_gate = threading.Event()
+        self.assertEqual(self._open().status_code, 200)
+        started = time.perf_counter()
+        accepted = self.client.post(
+            "/assistant/experience-note/update",
+            headers=self.headers,
+            json={
+                "item_key": ITEM_KEY,
+                "attachment_key": ATTACHMENT_KEY,
+                "context_fingerprint": CONTEXT_FINGERPRINT,
+                "document_id": DOCUMENT_ID,
+            },
+        )
+        elapsed = time.perf_counter() - started
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        self.assertLess(elapsed, 0.5)
+        self.assertTrue(self.pi_chat.source_discovery_started.wait(timeout=0.5))
+        duplicate = self.client.post(
+            "/assistant/experience-note/update",
+            headers=self.headers,
+            json={
+                "item_key": ITEM_KEY,
+                "attachment_key": ATTACHMENT_KEY,
+                "context_fingerprint": CONTEXT_FINGERPRINT,
+                "document_id": DOCUMENT_ID,
+            },
+        )
+        self.assertEqual(duplicate.status_code, 202, duplicate.text)
+        self.assertEqual(duplicate.json()["job_id"], accepted.json()["job_id"])
+        self.pi_chat.source_discovery_gate.set()
+
+        job_id = accepted.json()["job_id"]
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            status = self.client.get(
+                f"/assistant/experience-note/jobs/{job_id}",
+                headers=self.headers,
+            ).json()
+            if status["status"] in {"completed", "failed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status["status"], "completed", status)
+        self.assertEqual(self.pi_chat.item_session_source_calls, [(ITEM_KEY, 7)])
 
     def test_idle_reaping_clears_prepared_context(self) -> None:
         self.assertEqual(self._open().status_code, 200)
