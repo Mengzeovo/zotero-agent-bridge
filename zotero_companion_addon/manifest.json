@@ -1,7 +1,7 @@
 ﻿{
   "manifest_version": 2,
   "name": "Zotero Pi Assistant",
-  "version": "0.4.1-beta",
+  "version": "0.4.2-beta",
   "description": "Built-in Pi literature assistant for Zotero with managed private Bridge.",
   "applications": {
     "zotero": {
