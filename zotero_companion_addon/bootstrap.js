@@ -1,7 +1,5 @@
 /**
- * Zotero Pi Assistant add-on bootstrap.
- *
- * Compatible with Zotero 7/8/9 bootstrapped add-ons.
+ * Zotero Pi Assistant 插件入口，支持 Zotero 7–10。
  */
 
 async function convertMarkdownNoteHTML(payload, betterNotes) {
@@ -34,6 +32,16 @@ class BridgeProtocolError extends Error {
     this.name = "BridgeError";
     this.code = code;
     this.details = details;
+  }
+}
+
+function requireBridgeVersion(actualVersion, expectedVersion) {
+  if (actualVersion !== expectedVersion) {
+    throw new BridgeProtocolError(
+      "bridge_version_incompatible",
+      `This add-on requires Bridge ${expectedVersion}; the available Bridge reports ${actualVersion || "no version"}`,
+      { expected_version: expectedVersion, actual_version: actualVersion || null },
+    );
   }
 }
 
@@ -152,7 +160,7 @@ async function writeBootstrapLog(message, details) {
 }
 
 function buildZoteroAgentBridge(rootURI) {
-  const ADDON_VERSION = "0.4.2";
+  const ADDON_VERSION = "0.4.4";
   const DEFAULT_POLL_INTERVAL_MS = 1000;
   const DEFAULT_STATUS_INTERVAL_MS = 5000;
   const DEFAULT_BRIDGE_HOST = "127.0.0.1";
@@ -339,11 +347,13 @@ function buildZoteroAgentBridge(rootURI) {
     }
     if (response.status < 200 || response.status >= 300) {
       const error = data && data.error ? data.error : {};
-      throw new BridgeError(
+      const requestError = new BridgeError(
         error.code || "bridge_http_error",
         error.message || `Bridge HTTP request failed with status ${response.status}`,
         error.details || data,
       );
+      requestError.statusCode = response.status;
+      throw requestError;
     }
     return data;
   }
@@ -372,6 +382,7 @@ function buildZoteroAgentBridge(rootURI) {
   }
 
   function classifyLifecycle(lifecycle, { bundled = false } = {}) {
+    requireBridgeVersion(lifecycle?.bridge_version, ADDON_VERSION);
     return classifyBridgeLifecycle(lifecycle, {
       bundled,
       expectedBundleVersion: state.bridgeBundleInfo?.manifest?.bridge_version || null,
@@ -502,6 +513,7 @@ function buildZoteroAgentBridge(rootURI) {
   }
 
   async function startBundleAndWait(bundleInfo, { rollbackFrom = null } = {}) {
+    requireBridgeVersion(bundleInfo?.manifest?.bridge_version, ADDON_VERSION);
     state.bridgeBundleInfo = bundleInfo;
     state.bridgeState = "starting";
     const ownerId = newOwnerValue();
@@ -694,7 +706,8 @@ function buildZoteroAgentBridge(rootURI) {
       return await rawBridgeRequest(method, path, payload, options);
     } catch (error) {
       if (
-        options.retryOnUnreachable === false
+        !["GET", "HEAD"].includes(String(method).toUpperCase())
+        || options.retryOnUnreachable === false
         || !(error instanceof BridgeError)
         || error.code !== "bridge_unreachable"
       ) {
@@ -834,6 +847,7 @@ function buildZoteroAgentBridge(rootURI) {
       rootURI,
       locale: Services.locale.appLocaleAsBCP47,
       bridgeRequest,
+      createRequestId: newOwnerValue,
       appendLog,
       markdownRenderer: scope.ZoteroAgentBridgeMarkdownRenderer.create({
         marked: scope.marked,
@@ -1298,6 +1312,7 @@ if (typeof module !== "undefined" && module.exports) {
     __test: {
       convertMarkdownNoteHTML,
       classifyBridgeLifecycle,
+      requireBridgeVersion,
       PI_ONLY_LIFECYCLE_PROTOCOL_VERSION,
       TRANSITIONAL_LIFECYCLE_PROTOCOL_VERSION,
       PI_ONLY_PRODUCT_SCOPE,

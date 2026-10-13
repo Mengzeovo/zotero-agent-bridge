@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from copy import deepcopy
+import hashlib
 import ipaddress
 import json
 from pathlib import Path
@@ -35,6 +36,7 @@ from .models import (
     AssistantSessionOpenRequest,
     AssistantSessionOpenResponse,
     AssistantSessionResumeRequest,
+    AssistantSubmissionIdentity,
     AssistantThinkingLevelRequest,
 )
 from .experience_notes import ExperienceNoteJobManager, ExperienceSnapshot, TITLE_SYSTEM_PROMPT
@@ -699,7 +701,20 @@ class BridgeService:
 
     def send_assistant_message(self, request: AssistantMessageRequest) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
+        request_digest = hashlib.sha256(
+            json.dumps(request.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        try:
+            return pi_chat.submission_status(request.request_id, request_digest)
+        except BridgeError as exc:
+            if exc.code != "pi_request_not_found":
+                raise
         with self._assistant_lock:
+            try:
+                return pi_chat.submission_status(request.request_id, request_digest)
+            except BridgeError as exc:
+                if exc.code != "pi_request_not_found":
+                    raise
             context = self._active_reading_context
             if context is None:
                 raise BridgeError(409, "assistant_context_not_prepared", "Open a Zotero literature item before sending a message")
@@ -707,19 +722,23 @@ class BridgeService:
             images = [image.model_dump(mode="json") for image in request.images]
             injection_required = pi_chat.context_injection_required(context.fingerprint)
             self._active_context_injection_required = injection_required
-            # Completed or aborted turns can leave terminal events buffered after the
-            # panel's last cursor. Start each prompt from an authoritative clean cursor
-            # so a stale agent_settled event cannot terminate polling for the new turn.
-            pi_chat.clear_events()
-            event_cursor = int(pi_chat.status().get("last_cursor") or 0)
-            if injection_required:
-                prompt = _build_literature_bootstrap_prompt(context.markdown, question)
-                response = pi_chat.prompt(prompt, images=images, context_fingerprint=context.fingerprint)
+            prompt = _build_literature_bootstrap_prompt(context.markdown, question) if injection_required else question
+            response = pi_chat.prompt(
+                prompt,
+                images=images,
+                context_fingerprint=context.fingerprint if injection_required else None,
+                request_id=request.request_id,
+                request_digest=request_digest,
+                expected_identity={"instance_id": request.instance_id, "generation": request.generation, "document_id": request.document_id},
+            )
+            if injection_required and response["status"] in {"accepted", "completed", "aborted"}:
                 self._active_context_injection_required = False
                 self._active_context_updated = False
-                return {**response, "context_injected": True, "event_cursor": event_cursor}
-            response = pi_chat.prompt(question, images=images)
-            return {**response, "context_injected": False, "event_cursor": event_cursor}
+            return response
+
+    def assistant_request_status(self, request_id: str) -> dict[str, Any]:
+        pi_chat, _ = self._require_assistant()
+        return pi_chat.submission_status(request_id)
 
     def assistant_events(self, after: int = 0) -> AssistantEventsResponse:
         pi_chat, _ = self._require_assistant()
@@ -743,7 +762,13 @@ class BridgeService:
 
     def assistant_messages(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
-        return _project_assistant_messages(pi_chat.get_messages())
+        before = pi_chat.status()
+        response = _project_assistant_messages(pi_chat.get_messages())
+        after = pi_chat.status()
+        identity = {key: before[key] for key in ("instance_id", "generation", "document_id")}
+        if any(after[key] != value for key, value in identity.items()):
+            raise BridgeError(409, "pi_session_changed", "The active Pi session changed while reading messages")
+        return {**response, **identity}
 
     def assistant_session_history(self) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
@@ -1112,9 +1137,16 @@ class BridgeService:
             raise BridgeError(503, "experience_notes_unavailable", "Experience note generation is unavailable")
         return AssistantExperienceNoteJobStatus(**self.experience_jobs.payload(job_id))
 
-    def abort_assistant_session(self) -> dict[str, Any]:
+    def abort_assistant_session(self, request: AssistantSubmissionIdentity | None = None) -> dict[str, Any]:
         pi_chat, _ = self._require_assistant()
         with self._assistant_lock:
+            if request is not None:
+                state = pi_chat.status()
+                if any(state[key] != getattr(request, key) for key in ("instance_id", "generation", "document_id")):
+                    raise BridgeError(409, "pi_session_changed", "The submission belongs to a different Pi session")
+                active_request = state["active_request"]
+                if not active_request or active_request["request_id"] != request.request_id:
+                    raise BridgeError(409, "pi_request_changed", "The active Pi submission changed")
             response = pi_chat.abort()
             pi_chat.clear_events()
             return response
@@ -1280,6 +1312,10 @@ def create_app(
     def send_assistant_message(request: AssistantMessageRequest) -> dict[str, Any]:
         return service.send_assistant_message(request)
 
+    @app.get("/assistant/session/requests/{request_id}", dependencies=[Depends(authorize)])
+    def assistant_request_status(request_id: str) -> dict[str, Any]:
+        return service.assistant_request_status(request_id)
+
     @app.get(
         "/assistant/session/events",
         dependencies=[Depends(authorize)],
@@ -1352,8 +1388,8 @@ def create_app(
         return service.experience_note_job_status(job_id)
 
     @app.post("/assistant/session/abort", dependencies=[Depends(authorize)])
-    def abort_assistant_session() -> dict[str, Any]:
-        return service.abort_assistant_session()
+    def abort_assistant_session(request: AssistantSubmissionIdentity | None = None) -> dict[str, Any]:
+        return service.abort_assistant_session(request)
 
     @app.post(
         "/assistant/session/reset",

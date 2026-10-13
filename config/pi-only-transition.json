@@ -16,6 +16,7 @@
     {"method": "POST", "path": "/lifecycle/shutdown"},
     {"method": "POST", "path": "/assistant/session/open"},
     {"method": "POST", "path": "/assistant/session/message"},
+    {"method": "GET", "path": "/assistant/session/requests/{request_id}"},
     {"method": "GET", "path": "/assistant/session/events"},
     {"method": "GET", "path": "/assistant/session/messages"},
     {"method": "GET", "path": "/assistant/session/history"},

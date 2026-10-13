@@ -2,7 +2,7 @@
 
 [简体中文](README.md) | **English**
 
-**Current version: 0.4.2** · **Zotero 7–9 supported (Zotero 9 recommended)** · **Current release platform: Windows x64**
+**Current version: 0.4.4** · **Zotero 7–10 supported** · **Current release platform: Windows x64**
 
 Zotero Pi Assistant is a local literature-reading assistant embedded in Zotero. It turns the selected paper's PDF, bibliographic metadata, Zotero notes, and annotations into structured context, sends that context to Pi CLI for question answering, and stores conversations and organized knowledge locally.
 
@@ -17,6 +17,7 @@ Its purpose is not to turn Zotero into a general automation platform. It is desi
 | Literature context | Reads the selected Zotero item's local PDF, metadata, child notes, PDF annotations, and page information. Stored and linked PDFs are supported when Zotero can resolve their paths. |
 | Embedded Zotero chat | Provides Pi chat directly in the Item Pane and PDF Reader sidebar, reducing context switching between Zotero and a separate terminal. |
 | Streaming conversations | Supports streaming responses, aborting generation, starting a new session, model selection, and thinking-level selection. |
+| Submission recovery | Each question has a stable request ID. Connection timeouts trigger status queries, allowing response progress to resume while duplicate requests retain the same question. |
 | Image questions | Supports image-only and text-plus-image prompts using PNG, JPEG, WebP, or GIF files. |
 | Session recovery | Maintains a separate Pi session for each paper. The current conversation can be restored after Zotero or Bridge restarts, while archived and orphan sessions can also be discovered and resumed. |
 | Content rendering | Renders Markdown, code blocks, and KaTeX formulas. Copying rendered formulas restores their original LaTeX source. |
@@ -65,13 +66,13 @@ Component responsibilities:
 ### Requirements
 
 - Windows x64.
-- Zotero 7–9, with Zotero 9 recommended.
+- Zotero 7–10.
 - Pi CLI installed and configured with at least one available model and its credentials.
 - A Zotero item containing a locally accessible PDF attachment.
 
 ### Steps
 
-1. Download `zotero-agent-bridge-addon-0.4.2.xpi` from [Releases](https://github.com/Mengzeovo/zotero-agent-bridge/releases/tag/v0.4.2).
+1. Download `zotero-agent-bridge-addon-0.4.4.xpi` from Releases.
 2. In Zotero, open **Tools → Plugins → Install Plugin From File…**.
 3. Select the XPI and restart Zotero.
 4. Select a paper with a local PDF, then open **Pi Literature Assistant** in the Item Pane or PDF Reader sidebar.
@@ -79,10 +80,14 @@ Component responsibilities:
 The add-on verifies and installs the bundled Bridge under:
 
 ```text
-%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.2
+%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.4
 ```
 
 Upgrades preserve the add-on ID, Bridge token, Pi session paths, and document identity rules.
+
+### Updating the add-on in Zotero 10
+
+Open **Tools → Plugins** in Zotero 10, choose **Install Plugin From File…** from the gear menu, install `zotero-agent-bridge-addon-0.4.4.xpi`, and restart Zotero. The add-on updates to `0.4.4` and starts the new Bridge while preserving existing model settings, conversations, and notes.
 
 ## Basic usage
 
@@ -116,6 +121,8 @@ Experience Notes use three data layers:
 2. **Knowledge ledger**: exchange-level evidence, knowledge units, relations, corrections, and source status.
 3. **Zotero `Pi 经验笔记`**: a reading view deterministically rebuilt from the ledger.
 
+`pi-chat/requests/<request_id>.json` stores submission identity, a content digest, event cursor, status, and timestamps for recovery after a connection interruption. These records exclude question text and images. Following a Bridge restart, requests whose completion was unconfirmed are reported as `unknown`, and the UI retains an explicit unconfirmed-result message.
+
 If a source session becomes missing or corrupt, previously extracted knowledge is retained with an explicit warning rather than silently deleted. A forced rebuild intentionally recreates the ledger using only currently readable sources.
 
 ## Security and privacy boundary
@@ -146,15 +153,18 @@ Backing up Zotero data and `%USERPROFILE%\Zotero\zotero-agent-bridge` before upg
 Only developers building from source need Python 3.12+, PowerShell, Node.js, and an available Pi CLI:
 
 ```powershell
-py -3.12 -m pip install -e .
-py -3.12 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2 -BuildBridge
+py -3.12 -m pip install -e '.[live-test]'
+$env:ZOTERO_AGENT_BRIDGE_PI_LIVE_MODEL = "deepseek/deepseek-v4-pro"
+py -3.12 -m unittest tests.test_pi_submission_live tests.test_pi_generation_live
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.4 -BuildBridge
 ```
+
+Pi integration tests use a real model with configured credentials and independent directories and sessions under the project's `tmp/`. Coverage includes duplicate submissions, identity validation, recovery after timeouts, process exit, final generation completion, and process cleanup. These tests incur actual model usage. Set `ZOTERO_AGENT_BRIDGE_PI_EXECUTABLE` to select a Pi executable.
 
 Outputs:
 
 ```text
-dist\zotero-agent-bridge-addon-0.4.2.xpi
+dist\zotero-agent-bridge-addon-0.4.4.xpi
 dist\zotero-agent-bridge-addon.xpi
 ```
 

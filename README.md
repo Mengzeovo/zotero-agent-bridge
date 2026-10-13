@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.en.md)
 
-**当前版本：0.4.2** · **支持 Zotero 7–9（推荐 Zotero 9）** · **当前发行平台：Windows x64**
+**当前版本：0.4.4** · **支持 Zotero 7–10** · **当前发行平台：Windows x64**
 
 Zotero Pi Assistant 是一个嵌入 Zotero 的本地文献阅读助手。它把当前论文的 PDF、书目信息、Zotero 笔记与批注组织成结构化上下文，交给 Pi CLI 完成问答，并将会话和整理结果保存到本地。
 
@@ -17,6 +17,7 @@ Zotero Pi Assistant 是一个嵌入 Zotero 的本地文献阅读助手。它把�
 | 文献上下文构建 | 读取当前 Zotero 条目的本地 PDF、元数据、子笔记和 PDF 批注，并保留页码信息。支持 Zotero 能够解析路径的 stored/linked PDF。 |
 | Zotero 内置对话 | 在条目侧栏和 PDF Reader 侧栏中直接与 Pi 对话，无需在 Zotero 与独立终端之间反复切换。 |
 | 连续流式问答 | 支持流式回答、中止生成、新建会话、模型切换和思考程度切换。 |
+| 提交状态恢复 | 每次提问使用固定请求 ID；连接超时后查询提交状态，恢复回答进度，重复请求保持同一次提问。 |
 | 图片提问 | 支持纯图片或文字加图片的提问；格式包括 PNG、JPEG、WebP 和 GIF。 |
 | 会话恢复 | 每篇论文使用独立的 Pi session；Zotero 或 Bridge 重启后可恢复当前会话，也可浏览、恢复历史会话和找回孤儿会话。 |
 | 内容渲染 | 支持 Markdown、代码块和 KaTeX 公式；复制渲染后的公式时会恢复原始 LaTeX。 |
@@ -65,13 +66,13 @@ Model Provider
 ### 使用前要求
 
 - Windows x64。
-- Zotero 7–9，推荐 Zotero 9。
+- Zotero 7–10。
 - 已安装 Pi CLI，并已配置至少一个可用模型及对应凭据。
 - 论文条目包含 Zotero 可访问的本地 PDF attachment。
 
 ### 安装步骤
 
-1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.2.xpi`。
+1. 从 Releases 下载 `zotero-agent-bridge-addon-0.4.4.xpi`。
 2. 在 Zotero 打开 **工具 → 插件 → Install Plugin From File…**。
 3. 选择 XPI 并重启 Zotero。
 4. 选中带本地 PDF 的论文，在条目侧栏或 PDF Reader 侧栏打开 **Pi 文献助手**。
@@ -79,10 +80,14 @@ Model Provider
 插件会自动校验并安装自带 Bridge 到：
 
 ```text
-%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.2
+%LOCALAPPDATA%\ZoteroAgentBridge\bridge\0.4.4
 ```
 
 升级会保留 add-on ID、Bridge Token、Pi session 路径和文档 ID 规则。
+
+### Zotero 10 插件更新
+
+在 Zotero 10 的 **工具 → 插件** 中选择齿轮菜单的 **Install Plugin From File…**，安装 `zotero-agent-bridge-addon-0.4.4.xpi`，然后重启 Zotero。插件会更新为 `0.4.4` 并启用新的 Bridge，已有模型设置、会话和笔记继续保留。
 
 ## 基本使用
 
@@ -116,6 +121,8 @@ Model Provider
 2. **知识账本**：保存问答级证据、知识单元、关系和来源状态。
 3. **Zotero `Pi 经验笔记`**：从账本确定性重建的阅读视图。
 
+`pi-chat/requests/<request_id>.json` 保存提问的身份、内容摘要、事件游标、状态和时间，用于查询连接中断后的提交结果。记录中不保存问题正文和图片。Bridge 重启后，尚未确认完成的请求标记为 `unknown`，界面保留结果未确认的提示。
+
 当来源会话缺失或损坏时，已经提取的知识不会被静默删除，而是保留并显示警告；“强制重建”则只使用当前仍可读取的来源重新生成账本。
 
 ## 安全与隐私边界
@@ -146,15 +153,18 @@ Model Provider
 仅开发者从源码构建时需要 Python 3.12+、PowerShell、Node.js 和可调用的 Pi CLI：
 
 ```powershell
-py -3.12 -m pip install -e .
-py -3.12 -m unittest discover -s tests
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2 -BuildBridge
+py -3.12 -m pip install -e '.[live-test]'
+$env:ZOTERO_AGENT_BRIDGE_PI_LIVE_MODEL = "deepseek/deepseek-v4-pro"
+py -3.12 -m unittest tests.test_pi_submission_live tests.test_pi_generation_live
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.4 -BuildBridge
 ```
+
+Pi 集成测试使用已经配置凭据的真实模型，在项目 `tmp/` 下创建独立目录和会话。测试覆盖重复提交、身份验证、超时后的状态恢复、进程退出，以及生成完成和进程清理；会产生实际模型调用费用。`ZOTERO_AGENT_BRIDGE_PI_EXECUTABLE` 可指定 Pi 可执行程序路径。
 
 主要输出：
 
 ```text
-dist\zotero-agent-bridge-addon-0.4.2.xpi
+dist\zotero-agent-bridge-addon-0.4.4.xpi
 dist\zotero-agent-bridge-addon.xpi
 ```
 

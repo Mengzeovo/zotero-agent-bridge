@@ -44,7 +44,14 @@ class AssistantImageInput(BaseModel):
         return self
 
 
-class AssistantMessageRequest(BaseModel):
+class AssistantSubmissionIdentity(BaseModel):
+    request_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    instance_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    generation: int = Field(ge=1)
+    document_id: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class AssistantMessageRequest(AssistantSubmissionIdentity):
     message: str = ""
     images: list[AssistantImageInput] = Field(default_factory=list, max_length=ASSISTANT_MAX_IMAGES)
 
@@ -128,6 +135,7 @@ class AssistantSessionOpenResponse(BaseModel):
 
 
 class AssistantEventsResponse(BaseModel):
+    instance_id: str
     events: list[dict[str, Any]] = Field(default_factory=list)
     last_cursor: int
     cursor_expired: bool = False

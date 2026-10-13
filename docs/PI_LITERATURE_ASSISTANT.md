@@ -1,4 +1,4 @@
-# Zotero Pi Assistant 0.4.2
+# Zotero Pi Assistant 0.4.4
 
 Zotero Pi Assistant embeds a Pi-powered literature chat panel in the Zotero Item Pane. The XPI bundles a private Windows x64 Bridge; the add-on owns Bridge lifecycle, while the Bridge owns Pi RPC lifecycle.
 
@@ -21,6 +21,7 @@ Every route requires the managed Bridge token.
 - `POST /lifecycle/shutdown`
 - `POST /assistant/session/open`
 - `POST /assistant/session/message`
+- `GET /assistant/session/requests/{request_id}`
 - `GET /assistant/session/events`
 - `GET /assistant/session/messages`
 - `GET /assistant/session/history`
@@ -37,6 +38,37 @@ Every route requires the managed Bridge token.
 - `POST /assistant/session/reset`
 
 The HTTP server is an internal add-on transport, not a public Agent API.
+
+## 提问提交与完成状态
+
+`POST /assistant/session/message` 除 `message` 和 `images` 外，还要求以下字段：
+
+| 字段 | 格式与来源 |
+| --- | --- |
+| `request_id` | 插件为单次提问生成的 32 位小写十六进制 ID；整个提交和恢复过程保持相同值。 |
+| `instance_id` | 当前 Bridge 返回的 32 位小写十六进制实例 ID。 |
+| `generation` | 当前 Pi 会话返回的大于等于 `1` 的整数。 |
+| `document_id` | 当前论文返回的 64 位小写十六进制 ID。 |
+
+Bridge 在发送 Pi RPC 前，将请求记录原子写入 `pi-chat/requests/<request_id>.json`。记录包含内容摘要、会话身份、事件游标、状态、时间和错误信息，不保存 `message` 或 `images`。相同 ID 和相同内容返回已有状态；相同 ID 对应不同内容返回 `409 pi_request_conflict`。身份与当前会话不匹配时返回 `409 pi_session_changed`。
+
+插件通过 `GET /assistant/session/requests/{request_id}` 查询提交结果。连接中断后继续查询该 ID；修改状态的 HTTP 请求关闭通用自动重试。新的提问接受检查完成后，才更新当前提问的事件范围。
+
+| 状态 | 含义 |
+| --- | --- |
+| `pending` | 请求已记录，正在等待 Pi 确认。 |
+| `accepted` | Pi 已接受请求，继续读取回答事件。 |
+| `completed` | Pi 已发送 `agent_settled`，本次运行完成。 |
+| `handled` | Pi 已处理请求，未启动生成。 |
+| `rejected` | Pi 或 Bridge 明确拒绝请求。 |
+| `aborted` | 本次生成已中止。 |
+| `unknown` | 请求可能已经发送，完成结果尚未确认。 |
+
+Bridge 重启后，旧实例中尚未完成的记录返回 `unknown`。请求记录继续参与重复 ID 检查。活动请求随会话状态返回，插件恢复界面时可以继续查询。
+
+`POST /assistant/session/abort` 支持可选的请求体。提供请求体时，必须同时包含 `request_id`、`instance_id`、`generation`、`document_id`，并与当前活动请求一致；身份检查失败返回 `409`。插件使用该请求体限定中止操作的目标。
+
+对话和 `PiOneShotGenerator` 都使用 `agent_settled` 确认本次运行完成，保留 Pi 自动压缩和重试所需的运行时间。内部标题和知识生成只接受最终 `stopReason == "stop"` 且非空的回答；请求被拒绝、未启动生成、进程提前退出、超时或中止时返回明确错误，并清理独立进程。
 
 ## Removed surfaces
 
@@ -93,7 +125,17 @@ Pi is launched with tools, skills, prompt templates, extensions, context files, 
 ## Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.2 -BuildBridge
+powershell -ExecutionPolicy Bypass -File scripts\build_addon_xpi.ps1 -Version 0.4.4 -BuildBridge
 ```
+
+## 真实 Pi 集成测试
+
+```powershell
+py -3.12 -m pip install -e '.[live-test]'
+$env:ZOTERO_AGENT_BRIDGE_PI_LIVE_MODEL = "deepseek/deepseek-v4-pro"
+py -3.12 -m unittest tests.test_pi_submission_live tests.test_pi_generation_live
+```
+
+测试通过本机 Pi 调用已经配置凭据的模型，在项目 `tmp/` 下创建独立工作目录和会话，覆盖重复提交、会话身份、状态持久化、RPC 超时恢复、进程退出和最终回答检查。测试会产生实际模型调用费用；可通过 `ZOTERO_AGENT_BRIDGE_PI_EXECUTABLE` 指定可执行程序路径。
 
 Normal users install the XPI and do not need Python, pip, source checkout, legacy launchers, MCP registration, or Obsidian integration.

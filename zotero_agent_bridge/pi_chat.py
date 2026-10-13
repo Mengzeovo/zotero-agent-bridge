@@ -27,6 +27,8 @@ CONTEXT_FINGERPRINT_RE = re.compile(r"^[a-f0-9]{64}$")
 PROMPT_ACCEPTED_EVENT_TYPES = {"agent_start", "message_start", "message_update", "message_end"}
 MAX_SESSION_HISTORY = 20
 SESSION_HANDLE_RE = re.compile(r"^[a-f0-9]{16}$")
+REQUEST_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+SUBMISSION_TERMINAL_STATES = {"completed", "handled", "rejected", "aborted"}
 
 
 class PiChatManager:
@@ -64,6 +66,8 @@ class PiChatManager:
 
         self.chat_home = ensure_dir(settings.bridge_home / "pi-chat")
         self.index_path = self.chat_home / "session-index.json"
+        self.requests_home = ensure_dir(self.chat_home / "requests")
+        self.instance_id = uuid.uuid4().hex
         ensure_dir(self.pi.session_dir)
 
         self._lock = threading.RLock()
@@ -122,6 +126,8 @@ class PiChatManager:
                 "last_error": self._last_error,
                 "last_cursor": self._cursor,
                 "generation": self._active_generation,
+                "instance_id": self.instance_id,
+                "active_request": self._active_submission_locked(),
             }
 
     def events_after(self, cursor: int = 0) -> dict[str, Any]:
@@ -135,7 +141,43 @@ class PiChatManager:
                 "generation": self._active_generation,
                 "item_key": self._active_item_key,
                 "document_id": self._active_document_id,
+                "instance_id": self.instance_id,
             }
+
+    def submission_status(self, request_id: str, request_digest: str | None = None) -> dict[str, Any]:
+        if not REQUEST_ID_RE.fullmatch(request_id):
+            raise BridgeError(422, "invalid_request_id", "Request ID must contain 32 lowercase hexadecimal characters")
+        with self._lock:
+            record = read_json(self.requests_home / f"{request_id}.json")
+            if record is None:
+                raise BridgeError(404, "pi_request_not_found", "Pi submission has not been recorded")
+            if request_digest is not None and record["request_digest"] != request_digest:
+                raise BridgeError(409, "pi_request_conflict", "Request ID was already used for a different submission")
+            result = dict(record)
+            result.pop("request_digest")
+            if result["instance_id"] != self.instance_id and result["status"] not in SUBMISSION_TERMINAL_STATES:
+                result["status"] = "unknown"
+                result["error"] = {"code": "pi_request_interrupted", "message": "Bridge restarted before submission completion was confirmed"}
+            return result
+
+    def _active_submission_locked(self) -> dict[str, Any] | None:
+        if not self._inflight_prompt or not self._inflight_prompt.get("tracked"):
+            return None
+        return self.submission_status(self._inflight_prompt["request_id"])
+
+    def _update_submission_locked(self, request_id: str, status: str, error: dict[str, Any] | None = None) -> None:
+        path = self.requests_home / f"{request_id}.json"
+        record = read_json(path)
+        if record is None or record["status"] in SUBMISSION_TERMINAL_STATES:
+            return
+        if status == "accepted" and self._inflight_prompt and self._inflight_prompt["request_id"] == request_id:
+            record["context_injected"] = self._inflight_prompt["context_fingerprint"] is not None
+        record.update(status=status, updated_at=now_iso(), error=error)
+        atomic_write_json(path, record)
+
+    def _finish_submission_locked(self, status: str, error: dict[str, Any] | None = None) -> None:
+        if self._inflight_prompt and self._inflight_prompt.get("tracked"):
+            self._update_submission_locked(self._inflight_prompt["request_id"], status, error)
 
     def clear_events(self) -> None:
         """Discard buffered assistant event payloads without reusing old cursors."""
@@ -778,6 +820,7 @@ class PiChatManager:
                 fingerprint = prompt.get("context_fingerprint")
                 if fingerprint is None:
                     prompt["accepted"] = True
+                    self._finish_submission_locked("accepted")
                     return
                 document_id = self._active_document_id
                 session_file = self._active_session_file
@@ -797,6 +840,7 @@ class PiChatManager:
                     and (request_id is None or prompt.get("request_id") == request_id)
                 ):
                     prompt["accepted"] = True
+                    self._finish_submission_locked("accepted")
 
     def _reject_inflight_prompt(self, generation: int, request_id: str) -> None:
         with self._lock:
@@ -817,7 +861,19 @@ class PiChatManager:
         *,
         images: list[dict[str, str]] | None = None,
         context_fingerprint: str | None = None,
+        request_id: str | None = None,
+        request_digest: str | None = None,
+        expected_identity: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        tracked = request_id is not None
+        if tracked:
+            if request_digest is None or not CONTEXT_FINGERPRINT_RE.fullmatch(request_digest) or expected_identity is None:
+                raise BridgeError(422, "invalid_submission", "Submission digest and session identity are required")
+            try:
+                return self.submission_status(request_id, request_digest)
+            except BridgeError as exc:
+                if exc.code != "pi_request_not_found":
+                    raise
         message = str(message or "").strip()
         normalized_images = [dict(image) for image in (images or []) if isinstance(image, dict)]
         if not message and not normalized_images:
@@ -834,18 +890,42 @@ class PiChatManager:
             if context_fingerprint is not None
             else None
         )
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         with self._lock:
+            if tracked:
+                try:
+                    return self.submission_status(request_id, request_digest)
+                except BridgeError as exc:
+                    if exc.code != "pi_request_not_found":
+                        raise
+                identity = {"instance_id": self.instance_id, "generation": self._active_generation, "document_id": self._active_document_id}
+                if expected_identity != identity:
+                    raise BridgeError(409, "pi_session_changed", "The submission belongs to a different Pi session")
             self._require_running_locked()
             if self._streaming or self._inflight_prompt:
                 raise BridgeError(409, "pi_session_busy", "Pi is already generating a response")
             generation = self._active_generation
             assert generation is not None
+            if tracked:
+                record = {
+                    "request_id": request_id,
+                    "request_digest": request_digest,
+                    **identity,
+                    "status": "pending",
+                    "event_cursor": self._cursor,
+                    "context_injected": False,
+                    "created_at": now_iso(),
+                    "updated_at": now_iso(),
+                    "error": None,
+                }
+                atomic_write_json(self.requests_home / f"{request_id}.json", record)
+            self._events.clear()
             self._inflight_prompt = {
                 "request_id": request_id,
                 "generation": generation,
                 "context_fingerprint": fingerprint,
                 "accepted": False,
+                "tracked": tracked,
             }
             self._streaming = True
             self._last_activity = time.monotonic()
@@ -858,19 +938,43 @@ class PiChatManager:
                 payload,
                 request_id=request_id,
                 outcome_unknown_after_write=True,
+                expected_generation=generation,
             )
         except BridgeError as exc:
-            if exc.code != "pi_rpc_outcome_unknown":
+            unknown = exc.code == "pi_rpc_outcome_unknown"
+            with self._lock:
+                if tracked:
+                    current = self.submission_status(request_id)
+                    if not unknown or current["status"] != "accepted":
+                        self._update_submission_locked(request_id, "unknown" if unknown else "rejected", {"code": exc.code, "message": exc.message})
+            if not unknown:
                 self._reject_inflight_prompt(generation, request_id)
+            if tracked:
+                return self.submission_status(request_id)
             raise
-        self._accept_inflight_prompt(generation, request_id=request_id)
+        if (response.get("data") or {}).get("disposition") == "handled":
+            with self._lock:
+                self._update_submission_locked(request_id, "handled")
+                if self._inflight_prompt and self._inflight_prompt["request_id"] == request_id:
+                    self._inflight_prompt = None
+                    self._streaming = False
+        else:
+            self._accept_inflight_prompt(generation, request_id=request_id)
+        if tracked:
+            return self.submission_status(request_id)
         return response
 
     def abort(self) -> dict[str, Any]:
-        response = self._request("abort")
         with self._lock:
-            self._streaming = False
-            self._inflight_prompt = None
+            generation = self._active_generation
+            request_id = self._inflight_prompt["request_id"] if self._inflight_prompt else ""
+        response = self._request("abort", expected_generation=generation, expected_prompt_id=request_id)
+        with self._lock:
+            current_id = self._inflight_prompt["request_id"] if self._inflight_prompt else ""
+            if generation == self._active_generation and current_id == request_id:
+                self._finish_submission_locked("aborted")
+                self._streaming = False
+                self._inflight_prompt = None
         return response
 
     def get_state(self) -> dict[str, Any]:
@@ -1128,6 +1232,8 @@ class PiChatManager:
         timeout: float | None = None,
         request_id: str | None = None,
         outcome_unknown_after_write: bool = False,
+        expected_generation: int | None = None,
+        expected_prompt_id: str | None = None,
     ) -> dict[str, Any]:
         request_id = request_id or uuid.uuid4().hex
         write_flushed = False
@@ -1137,6 +1243,12 @@ class PiChatManager:
                 process = self._require_running_locked()
                 generation = self._active_generation
                 assert generation is not None
+                if expected_generation is not None and generation != expected_generation:
+                    raise BridgeError(409, "pi_session_changed", "The active Pi session changed before submission")
+                if expected_prompt_id is not None:
+                    current_id = self._inflight_prompt["request_id"] if self._inflight_prompt else ""
+                    if current_id != expected_prompt_id:
+                        raise BridgeError(409, "pi_request_changed", "The active Pi submission changed")
             with self._pending_lock:
                 self._pending[request_id] = (generation, response_queue)
             command = {"id": request_id, "type": command_type, **(payload or {})}
@@ -1152,8 +1264,8 @@ class PiChatManager:
                     self._pending.pop(request_id, None)
                 raise BridgeError(
                     503,
-                    "pi_rpc_unavailable",
-                    "Pi RPC process is unavailable",
+                    "pi_rpc_outcome_unknown" if outcome_unknown_after_write else "pi_rpc_unavailable",
+                    "Pi RPC connection ended during command delivery",
                     {"error": str(exc)},
                 ) from exc
 
@@ -1178,7 +1290,7 @@ class PiChatManager:
         if not response.get("success", False):
             raise BridgeError(
                 503,
-                "pi_rpc_error",
+                "pi_rpc_outcome_unknown" if outcome_unknown_after_write and response.get("transport_error") else "pi_rpc_error",
                 response.get("error") or f"Pi RPC command {command_type} failed",
                 {"command": command_type},
             )
@@ -1223,6 +1335,7 @@ class PiChatManager:
                 current = process is self._process and generation == self._active_generation
                 intentional = generation == self._stopping_generation or not current
                 if current:
+                    self._finish_submission_locked("unknown", {"code": "pi_process_exited", "message": "Pi process exited before completion was confirmed"})
                     self._streaming = False
                     self._inflight_prompt = None
                 if current and not intentional:
@@ -1271,11 +1384,20 @@ class PiChatManager:
                 )
             if prompt_response:
                 if event.get("success", False):
-                    try:
-                        self._accept_inflight_prompt(generation, request_id=request_id)
-                    except Exception as exc:
-                        self._record_error(process, generation, "context_fingerprint_persist_failed", str(exc))
+                    if (event.get("data") or {}).get("disposition") == "handled":
+                        with self._lock:
+                            self._update_submission_locked(request_id, "handled")
+                            if self._inflight_prompt and self._inflight_prompt["generation"] == generation and self._inflight_prompt["request_id"] == request_id:
+                                self._inflight_prompt = None
+                                self._streaming = False
+                    else:
+                        try:
+                            self._accept_inflight_prompt(generation, request_id=request_id)
+                        except Exception as exc:
+                            self._record_error(process, generation, "context_fingerprint_persist_failed", str(exc))
                 else:
+                    with self._lock:
+                        self._update_submission_locked(request_id, "rejected", {"code": "pi_rpc_error", "message": event.get("error") or "Pi rejected the prompt"})
                     self._reject_inflight_prompt(generation, request_id)
             return
 
@@ -1289,16 +1411,17 @@ class PiChatManager:
         with self._lock:
             if process is not self._process or generation != self._active_generation:
                 return
+            event = {**event, "request_id": self._inflight_prompt["request_id"] if self._inflight_prompt else None}
             if event_type == "agent_start":
                 self._streaming = True
             elif event_type == "agent_settled":
                 prompt = self._inflight_prompt
                 if not prompt or prompt.get("accepted"):
+                    self._finish_submission_locked("aborted" if event.get("aborted") else "completed")
                     self._streaming = False
                     self._inflight_prompt = None
                 else:
-                    # A settled event without an observed acceptance does not make
-                    # an indeterminate, flushed prompt safe to retry.
+                    # 未确认接收的提问仍需等待对应的 RPC 响应。
                     self._streaming = True
             self._last_activity = time.monotonic()
             self._append_event_locked(event)
@@ -1309,6 +1432,7 @@ class PiChatManager:
             {
                 "cursor": self._cursor,
                 "generation": self._active_generation,
+                "instance_id": self.instance_id,
                 "item_key": self._active_item_key,
                 "document_id": self._active_document_id,
                 **event,
@@ -1335,7 +1459,7 @@ class PiChatManager:
             if generation is not None and pending_generation != generation:
                 continue
             try:
-                pending.put_nowait({"type": "response", "success": False, "error": message})
+                pending.put_nowait({"type": "response", "success": False, "error": message, "transport_error": True})
             except queue.Full:
                 pass
 
@@ -1368,6 +1492,7 @@ class PiChatManager:
             return threads
 
         self._stopping_generation = generation
+        self._finish_submission_locked("unknown", {"code": "pi_session_closed", "message": "Pi session closed before completion was confirmed"})
         if generation is not None:
             self._fail_pending("Pi RPC process is shutting down", generation=generation)
         try:

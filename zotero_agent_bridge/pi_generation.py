@@ -89,21 +89,30 @@ class PiOneShotGenerator:
                     wait_seconds = 0.2 if deadline is None else min(0.2, max(0.01, deadline - time.monotonic()))
                     payload = events.get(timeout=wait_seconds)
                 except queue.Empty:
-                    if process.poll() is not None:
+                    if process.poll() is not None and not stdout_thread.is_alive():
                         break
                     continue
                 if payload is None:
                     break
-                if payload.get("type") == "response" and payload.get("id") == request_id and not payload.get("success", False):
-                    raise BridgeError(503, "pi_generation_failed", str(payload.get("error") or "Internal Pi prompt was rejected"), {"stderr": list(stderr_tail)})
+                if payload.get("type") == "response" and payload.get("id") == request_id:
+                    if not payload.get("success", False):
+                        raise BridgeError(503, "pi_generation_failed", str(payload.get("error") or "Internal Pi prompt was rejected"), {"stderr": list(stderr_tail)})
+                    data = payload.get("data")
+                    if isinstance(data, dict) and data.get("disposition") == "handled":
+                        raise BridgeError(503, "pi_generation_failed", "Internal Pi prompt was handled without starting a generation", {"stderr": list(stderr_tail)})
+                if payload.get("type") == "agent_start":
+                    final = None
                 if payload.get("type") == "message_end" and isinstance(payload.get("message"), dict) and payload["message"].get("role") == "assistant":
                     final = payload["message"]
-                if payload.get("type") == "agent_end" and not payload.get("willRetry"):
+                if payload.get("type") == "agent_end":
                     messages = payload.get("messages")
                     if isinstance(messages, list):
                         candidates = [m for m in messages if isinstance(m, dict) and m.get("role") == "assistant"]
                         if candidates:
                             final = candidates[-1]
+                if payload.get("type") == "agent_settled":
+                    if payload.get("aborted"):
+                        raise BridgeError(503, "pi_generation_incomplete", "Internal Pi generation was aborted", {"stop_reason": "aborted", "stderr": list(stderr_tail)})
                     completed = True
                     break
             if not completed:
@@ -112,14 +121,14 @@ class PiOneShotGenerator:
                 raise BridgeError(
                     503,
                     "pi_generation_failed",
-                    "Internal Pi generation ended before the agent completed",
+                    "Internal Pi generation ended before the agent settled",
                     {"stderr": list(stderr_tail)},
                 )
             if final is None:
                 raise BridgeError(503, "pi_generation_failed", "Internal Pi generation ended without an assistant response", {"stderr": list(stderr_tail)})
             text = content_text(final.get("content"))
             if final.get("stopReason") != "stop" or not text:
-                raise BridgeError(503, "pi_generation_incomplete", "Internal Pi generation did not finish cleanly", {"stop_reason": final.get("stopReason"), "stderr": list(stderr_tail)})
+                raise BridgeError(503, "pi_generation_incomplete", "Internal Pi generation did not finish cleanly", {"stop_reason": final.get("stopReason"), "error": final.get("errorMessage"), "stderr": list(stderr_tail)})
             return text
         except (BrokenPipeError, OSError) as exc:
             raise BridgeError(503, "pi_generation_failed", "Internal Pi process communication failed", {"error": str(exc)}) from exc

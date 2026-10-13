@@ -32,7 +32,7 @@ bridge/windows-x64/
 ```json
 {
   "bundle_schema_version": 1,
-  "bridge_version": "0.4.2",
+  "bridge_version": "0.4.4",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
@@ -106,7 +106,7 @@ bridge/windows-x64/
 ```json
 {
   "sentinel_schema_version": 1,
-  "bridge_version": "0.4.2",
+  "bridge_version": "0.4.4",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "manifest_sha256": "<sha256 of canonical manifest bytes>",
@@ -122,10 +122,10 @@ bridge/windows-x64/
 ```json
 {
   "state_schema_version": 1,
-  "current_version": "0.4.2",
+  "current_version": "0.4.4",
   "current_protocol_version": 2,
   "current_product_scope": "zotero-pi-only",
-  "last_known_good": "0.4.2",
+  "last_known_good": "0.4.4",
   "last_known_good_protocol_version": 2,
   "last_known_good_product_scope": "zotero-pi-only",
   "pending_version": null,
@@ -156,7 +156,7 @@ Bridge `/lifecycle` 必须返回：
   "pid": 1234,
   "started_at": "...",
   "exit_with_addon": true,
-  "bridge_version": "0.4.2",
+  "bridge_version": "0.4.4",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled"
@@ -179,7 +179,7 @@ Bridge Home 中写入 `bridge-runtime.json`：
 ```json
 {
   "runtime_schema_version": 1,
-  "bridge_version": "0.4.2",
+  "bridge_version": "0.4.4",
   "protocol_version": 2,
   "product_scope": "zotero-pi-only",
   "distribution": "xpi-bundled",
@@ -192,13 +192,21 @@ Bridge Home 中写入 `bridge-runtime.json`：
 
 该文件只用于 Zotero add-on 的内部运行时定位和升级诊断；它不是对外客户端发现机制，也不包含 owner token。
 
+## 提交记录与升级
+
+`0.4.4` 保持 bundle schema `1` 和 lifecycle protocol `2`。同一个 XPI 中的插件和 Bridge 使用带 `request_id`、`instance_id`、`generation`、`document_id` 的提问协议，插件通过 `GET /assistant/session/requests/{request_id}` 查询提交状态。
+
+已有进程、source 进程与待启动 Bundle 的 `bridge_version` 必须与插件版本一致。版本检查在接收已有进程和启动 Bundle 前执行；不匹配时返回 `bridge_version_incompatible`，包含要求的版本和实际版本。
+
+请求记录保存在 `<Zotero Data Directory>/zotero-agent-bridge/pi-chat/requests/`，随 Bridge 数据保留。升级安装只处理 Bundle 目录。每次 Bridge 启动生成新的 `instance_id`；旧实例尚未确认完成的请求返回 `unknown`，相同请求 ID 继续引用原记录。
+
 ## 回滚规则
 
 - 新版本安装后先写入 `pending_version`、`pending_protocol_version` 和 `pending_product_scope`。
 - 只有 `/lifecycle` 返回相同版本、协议和 product scope 后，才能更新 `last_known_good_*`。
 - 读取安装状态时先建立 `protocol_floor=2`；所有 protocol v1 rollback candidate 均被拒绝，且旧 v1 manifest 不再由安装器解析。
 - Pi-only v2 成功后更新 `protocol_floor=2` 和 `pi_only_established_at`。
-- v2 到 v2 的回滚仍可使用，但候选必须具有有效 manifest、`product_scope=zotero-pi-only`、哨兵和文件哈希。
+- v2 候选必须与当前插件版本一致，并具有有效 manifest、`product_scope=zotero-pi-only`、哨兵和文件哈希。
 - 回退必须在 UI、状态和日志中明确显示，不能静默长期运行旧版本。
 
 ## 安全拒绝条件

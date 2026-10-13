@@ -70,6 +70,8 @@ def addon_route_calls(path: Path) -> set[RoutePair]:
         route_path = match.group("path").split("?", 1)[0]
         if route_path.startswith("/assistant/experience-note/jobs/${"):
             route_path = "/assistant/experience-note/jobs/{job_id}"
+        if route_path.startswith("/assistant/session/requests/${"):
+            route_path = "/assistant/session/requests/{request_id}"
         calls.add((match.group("method"), route_path))
     return calls
 
@@ -82,18 +84,18 @@ class PiOnlyContractTest(unittest.TestCase):
         cls.retired = policy_routes(cls.policy, "retired_http_routes")
         cls.routes = application_routes()
 
-    def test_product_metadata_is_zotero_pi_assistant_042(self) -> None:
+    def test_product_metadata_is_zotero_pi_assistant_044(self) -> None:
         manifest = json.loads((ROOT / "zotero_companion_addon" / "manifest.json").read_text(encoding="utf-8-sig"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         bootstrap = BOOTSTRAP_PATH.read_text(encoding="utf-8-sig")
         self.assertEqual(PRODUCT_NAME, "Zotero Pi Assistant")
         self.assertEqual(PRODUCT_SCOPE, "zotero-pi-only")
-        self.assertEqual(BRIDGE_VERSION, "0.4.2")
+        self.assertEqual(BRIDGE_VERSION, "0.4.4")
         self.assertEqual(manifest["name"], PRODUCT_NAME)
         self.assertEqual(manifest["version"], BRIDGE_VERSION)
         self.assertEqual(manifest["applications"]["zotero"]["id"], "zotero-agent-bridge@local")
         self.assertTrue(readme.startswith("# Zotero Pi Assistant"))
-        self.assertIn("**当前版本：0.4.2**", readme)
+        self.assertIn("**当前版本：0.4.4**", readme)
         self.assertNotIn("syncSelectedNoteToObsidian", bootstrap)
         self.assertNotIn("Sync to Obsidian", bootstrap)
 
@@ -109,7 +111,7 @@ class PiOnlyContractTest(unittest.TestCase):
             self.policy["stage_2"]["http_behavior"],
             "Retired routes remain authenticated compatibility stubs, perform no side effects, and return the transition_error payload.",
         )
-        self.assertEqual(len(self.retained), 19)
+        self.assertEqual(len(self.retained), 20)
         self.assertEqual(len(self.retired), 17)
         self.assertFalse(self.retained & self.retired)
         self.assertEqual(len(self.retained), len(self.policy["retained_http_routes"]))

@@ -46,6 +46,11 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       thinkingChanged: "已切换思考程度：{level}",
       thinkingFailed: "切换思考程度失败",
       thinking: "Pi 正在阅读和回答…",
+      submitting: "正在确认 Pi 是否接收问题…",
+      recovering: "连接中断，正在查询原问题的提交状态…",
+      submissionUnknown: "问题的提交结果未知。可以刷新状态或明确开始新会话。原问题已保留。",
+      refreshSubmission: "刷新提交状态",
+      sessionChanged: "会话已切换，请重新打开文献会话查看消息。",
       stopped: "已停止生成",
       switchPending: "Pi 正在回答。停止或等待完成后再切换文献。",
       inputPlaceholder: "输入问题；Enter 发送，Shift+Enter 换行；可直接粘贴图片…",
@@ -126,6 +131,11 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       thinkingChanged: "Thinking level changed: {level}",
       thinkingFailed: "Could not change thinking level",
       thinking: "Pi is reading and answering…",
+      submitting: "Checking whether Pi accepted the question…",
+      recovering: "Connection interrupted. Checking the original submission…",
+      submissionUnknown: "The submission outcome is unknown. Refresh its status or explicitly start a new session. Your question is preserved.",
+      refreshSubmission: "Refresh submission",
+      sessionChanged: "The session changed. Reopen the paper session to view its messages.",
       stopped: "Generation stopped",
       switchPending: "Pi is answering. Stop or wait before switching papers.",
       inputPlaceholder: "Type a question; Enter sends, Shift+Enter adds a line; paste images directly…",
@@ -288,6 +298,16 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     );
   }
 
+  function requestSessionMatches(session, request) {
+    return Boolean(
+      session
+      && request
+      && session.instance_id === request.instance_id
+      && session.generation === request.generation
+      && session.document_id === request.document_id
+    );
+  }
+
   function canSaveSnapshot({ sessionOpen, streaming, sending, answer, finalScope, currentScope, finalDocument, currentDocument }) {
     return Boolean(
       sessionOpen
@@ -326,6 +346,10 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.contextUpdated = false;
       this.streaming = false;
       this.sending = false;
+      this.pendingRequest = null;
+      this.requestCursorId = null;
+      this.recoveringRequest = false;
+      this.requestRecoveryTimer = null;
       this.modelLoading = false;
       this.models = [];
       this.currentModelIndex = -1;
@@ -367,7 +391,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.paperTitle = createElement(doc, "div", "zab-chat__paper-title", this.strings.noPaper);
       this.paperMeta = createElement(doc, "div", "zab-chat__paper-meta", "");
       paperCopy.append(this.paperTitle, this.paperMeta);
-      this.openButton = this._button(this.strings.open, "zab-chat__button zab-chat__button--quiet", () => this.openSession());
+      this.openButton = this._button(this.strings.open, "zab-chat__button zab-chat__button--quiet", () => (
+        this.pendingRequest ? this._recoverRequest(this._captureScope()) : this.openSession()
+      ));
       paperRow.append(paperCopy, this.openButton);
 
       const statusRow = createElement(doc, "div", "zab-chat__status");
@@ -537,7 +563,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         this._hideHistory();
         return;
       }
-      if (!this.sessionOpen || this.sending || this.streaming) {
+      if (!this.sessionOpen || this.sending || this.streaming || this.pendingRequest) {
         return;
       }
       const scope = this._captureScope();
@@ -610,7 +636,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     }
 
     async _resumeSession(sessionId) {
-      if (!this.sessionOpen || this.streaming || this.sending || this.disposed) {
+      if (!this.sessionOpen || this.streaming || this.sending || this.pendingRequest || this.disposed) {
         return;
       }
       if (!this.win.confirm(this.strings.resumeConfirm)) {
@@ -625,7 +651,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       try {
         const response = await this.controller.bridgeRequest("POST", "/assistant/session/resume", {
           session_id: sessionId,
-        });
+        }, { timeoutMs: 60000 });
         if (!this._scopeMatches(scope)) {
           return;
         }
@@ -638,6 +664,8 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           attachmentKey: this.selection.attachmentKey,
           contextFingerprint: String(resumeContext.fingerprint || "").toLowerCase(),
           documentId: String(response.session && response.session.document_id || "").toLowerCase(),
+          instanceId: String(response.session && response.session.instance_id || ""),
+          generation: Number(response.session && response.session.generation),
         };
         this.contextInjectionRequired = Boolean(response.context_injection_required);
         this.contextUpdated = Boolean(response.context_updated);
@@ -693,7 +721,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     }
 
     _removeImage(imageID) {
-      if (this.sending || this.streaming) {
+      if (this.sending || this.streaming || this.pendingRequest) {
         return;
       }
       this.images = this.images.filter((image) => image.id !== imageID);
@@ -739,6 +767,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     }
 
     async _handlePaste(event) {
+      if (this.sending || this.streaming || this.pendingRequest) {
+        return;
+      }
       const clipboard = event.clipboardData;
       const items = clipboard && clipboard.items ? [...clipboard.items] : [];
       const imageFiles = items
@@ -800,24 +831,29 @@ var ZoteroAgentBridgePiChatPanel = (() => {
 
     _updateControls() {
       const hasSelection = Boolean(this.selection);
-      const busy = this.sending || this.streaming || this.savingQuestionAnswer || this.pendingImageReads > 0;
+      const busy = this.sending || this.streaming || Boolean(this.pendingRequest) || this.savingQuestionAnswer || this.pendingImageReads > 0;
       this.input.disabled = !hasSelection || busy;
       this.sendButton.disabled = !hasSelection || busy || (!this.input.value.trim() && !this.images.length);
-      this.stopButton.disabled = !this.streaming;
+      this.stopButton.disabled = !this.streaming || this.sending;
       if (this.imageTray) {
         for (const button of this.imageTray.querySelectorAll(".zab-chat__image-remove")) {
-          button.disabled = this.sending || this.streaming;
+          button.disabled = busy;
         }
       }
-      this.openButton.disabled = !hasSelection || busy || this.sessionOpen;
+      this.openButton.textContent = this.pendingRequest ? this.strings.refreshSubmission : this.strings.open;
+      this.openButton.disabled = this.pendingRequest
+        ? this.recoveringRequest || this.sending || this.streaming
+        : !hasSelection || busy || this.sessionOpen;
       this.historyButton.disabled = !this.sessionOpen || busy;
-      this.resetButton.disabled = !this.sessionOpen || busy;
+      this.resetButton.disabled = !this.sessionOpen || (busy && !(
+        this.pendingRequest && this.pendingRequest.status === "unknown" && !this.sending && !this.streaming
+      ));
       this.modelSelect.disabled = !this.sessionOpen || busy || this.modelLoading || !this.models.length;
       this.thinkingSelect.disabled = !this.sessionOpen || busy || this.thinkingLoading || !this.thinkingLevels.length;
       const canSave = canSaveSnapshot({
         sessionOpen: this.sessionOpen,
         streaming: this.streaming,
-        sending: this.sending,
+        sending: this.sending || Boolean(this.pendingRequest),
         answer: this.lastFinalAnswer,
         finalScope: this.lastFinalScope,
         currentScope: this._captureScope(),
@@ -831,6 +867,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         && this.sessionIdentity
         && !this.streaming
         && !this.sending
+        && !this.pendingRequest
         && !this.savingQuestionAnswer
         && !this.experienceSubmitting
         && !this.experienceJobId
@@ -859,7 +896,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         }
         return;
       }
-      if (this.streaming || this.sending) {
+      if (this.streaming || this.sending || (this.pendingRequest && this.pendingRequest.status !== "unknown")) {
         this.pendingSelection = selection;
         this.hasPendingSelection = true;
         this._setStatus("warning", this.strings.switchPending);
@@ -938,6 +975,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     }
 
     _applySelection(selection) {
+      this._cancelRequestRecovery();
+      this.pendingRequest = null;
+      this.requestCursorId = null;
       this.selectionGeneration += 1;
       this.sessionGeneration += 1;
       this.pendingSelection = null;
@@ -1068,14 +1108,16 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         const response = await this.controller.bridgeRequest("POST", "/assistant/session/open", {
           item_key: selection.itemKey,
           attachment_key: selection.attachmentKey,
-        });
+        }, { timeoutMs: 60000 });
         if (!this._scopeMatches(scope)) {
           return false;
         }
         const context = response.context || {};
         const documentId = String(response.session && response.session.document_id || "").trim();
         const contextFingerprint = String(context.fingerprint || "").trim().toLowerCase();
-        if (!documentId || !contextFingerprint) {
+        const instanceId = String(response.session && response.session.instance_id || "");
+        const generation = Number(response.session && response.session.generation);
+        if (!documentId || !contextFingerprint || !/^[a-f0-9]{32}$/u.test(instanceId) || !Number.isInteger(generation) || generation < 1) {
           throw new Error(this.strings.bridgeError);
         }
         this.sessionOpen = true;
@@ -1084,6 +1126,8 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           attachmentKey: selection.attachmentKey,
           contextFingerprint,
           documentId: documentId.toLowerCase(),
+          instanceId,
+          generation,
         };
         this.contextInjectionRequired = Boolean(response.context_injection_required);
         this.contextUpdated = Boolean(response.context_updated);
@@ -1112,6 +1156,18 @@ var ZoteroAgentBridgePiChatPanel = (() => {
               ? this.strings.contextRequired
               : this.strings.opened,
         );
+        const savedRequest = this.controller.pendingRequests.get(this.sessionIdentity.documentId);
+        const activeRequest = response.session && response.session.active_request;
+        if (savedRequest || activeRequest) {
+          this.pendingRequest = savedRequest || { ...activeRequest, message: "", images: [], inputCleared: true };
+          this.controller.pendingRequests.set(this.pendingRequest.document_id, this.pendingRequest);
+          if (!this.pendingRequest.inputCleared) {
+            this.input.value = this.pendingRequest.message;
+            this.images = this.pendingRequest.images;
+            this._renderImages();
+          }
+          this._scheduleRequestRecovery(0, scope);
+        }
         return !this.hasPendingSelection;
       } catch (error) {
         if (this._scopeMatches(scope)) {
@@ -1186,7 +1242,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
 
     async _changeModel() {
       const nextIndex = Number(this.modelSelect.value);
-      if (!this.sessionOpen || this.sending || this.streaming || !Number.isInteger(nextIndex)) {
+      if (!this.sessionOpen || this.sending || this.streaming || this.pendingRequest || !Number.isInteger(nextIndex)) {
         return;
       }
       const model = this.models[nextIndex];
@@ -1201,7 +1257,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         const response = await this.controller.bridgeRequest("POST", "/assistant/session/model", {
           provider: model.provider,
           model_id: model.id,
-        });
+        }, { timeoutMs: 30000 });
         if (!this._scopeMatches(scope)) {
           return;
         }
@@ -1281,7 +1337,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
 
     async _changeThinkingLevel() {
       const nextLevel = this.thinkingSelect.value;
-      if (!this.sessionOpen || this.sending || this.streaming || !nextLevel) {
+      if (!this.sessionOpen || this.sending || this.streaming || this.pendingRequest || !nextLevel) {
         return;
       }
       if (!this.thinkingLevels.includes(nextLevel) || nextLevel === this.currentThinkingLevel) {
@@ -1294,7 +1350,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       try {
         const response = await this.controller.bridgeRequest("POST", "/assistant/session/thinking-level", {
           level: nextLevel,
-        });
+        }, { timeoutMs: 30000 });
         if (!this._scopeMatches(scope)) {
           return;
         }
@@ -1325,6 +1381,13 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       const response = await this.controller.bridgeRequest("GET", "/assistant/session/messages");
       if (!this._scopeMatches(scope)) {
         return false;
+      }
+      if (!requestSessionMatches(response, {
+        instance_id: this.sessionIdentity.instanceId,
+        generation: this.sessionIdentity.generation,
+        document_id: this.sessionIdentity.documentId,
+      })) {
+        throw new Error(this.strings.sessionChanged);
       }
       const messages = response && response.data && Array.isArray(response.data.messages)
         ? response.data.messages
@@ -1363,17 +1426,25 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     async send() {
       const message = this.input.value.trim();
       const images = this.images.map(({ type, data, mimeType }) => ({ type, data, mimeType }));
-      if ((!message && !images.length) || !this.selection || this.sending || this.streaming || this.pendingImageReads || this.disposed) {
+      if ((!message && !images.length) || !this.selection || this.sending || this.streaming || this.pendingRequest || this.pendingImageReads || this.disposed) {
         return;
       }
       this.sending = true;
       this._updateControls();
       let scope = null;
+      let submissionReturned = false;
       try {
         if (!(await this.openSession())) {
           return;
         }
         scope = this._captureScope();
+        const existing = this.controller.pendingRequests.get(this.sessionIdentity.documentId);
+        if (existing) {
+          this.pendingRequest = existing;
+          this.sending = false;
+          await this._recoverRequest(scope);
+          return;
+        }
         this.sending = true;
         this._updateControls();
         const displayMessage = [
@@ -1388,29 +1459,50 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         this.lastFinalQuestion = null;
         this.lastFinalScope = null;
         this.lastFinalDocument = null;
-        const accepted = await this.controller.bridgeRequest("POST", "/assistant/session/message", { message, images });
+        const request = {
+          request_id: this.controller.createRequestId(),
+          document_id: this.sessionIdentity.documentId,
+          instance_id: this.sessionIdentity.instanceId,
+          generation: this.sessionIdentity.generation,
+          message,
+          images: this.images.map((image) => ({ ...image })),
+          status: "pending",
+          inputCleared: false,
+        };
+        this.pendingRequest = request;
+        this.controller.pendingRequests.set(request.document_id, request);
+        this._setStatus("working", this.strings.submitting);
+        const accepted = await this.controller.bridgeRequest("POST", "/assistant/session/message", {
+          request_id: request.request_id,
+          document_id: request.document_id,
+          instance_id: request.instance_id,
+          generation: request.generation,
+          message,
+          images,
+        }, { timeoutMs: 30000 });
+        submissionReturned = true;
         if (!this._scopeMatches(scope)) {
           return;
         }
-        this.input.value = "";
-        this.images = [];
-        this._renderImages();
-        if (accepted && accepted.context_injected) {
-          this.contextInjectionRequired = false;
-          this.contextUpdated = false;
-        }
-        const eventCursor = Number(accepted && accepted.event_cursor);
-        if (Number.isInteger(eventCursor) && eventCursor >= 0) {
-          this.cursor = eventCursor;
-        }
-        this.streaming = true;
-        this._setStatus("working", this.strings.thinking);
-        this._beginPoll(scope);
+        await this._applyRequestRecord(accepted, scope);
       } catch (error) {
         if (!this.disposed && (!scope || this._scopeMatches(scope))) {
-          this.streaming = false;
-          this.activeQuestion = null;
-          this._showError(error);
+          if (this.pendingRequest && scope) {
+            this.sending = false;
+            if (!submissionReturned && [409, 422].includes(error && error.statusCode)) {
+              this._releaseRequest();
+              this.streaming = false;
+              this.activeQuestion = null;
+              this._showError(error);
+            } else {
+              this._setStatus("warning", this.strings.recovering);
+              await this._recoverRequest(scope);
+            }
+          } else {
+            this.streaming = false;
+            this.activeQuestion = null;
+            this._showError(error);
+          }
         }
       } finally {
         if (!this.disposed && (!scope || this._scopeMatches(scope))) {
@@ -1421,6 +1513,177 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           }
         }
       }
+    }
+
+    _cancelRequestRecovery() {
+      if (this.requestRecoveryTimer !== null) {
+        this.win.clearTimeout(this.requestRecoveryTimer);
+        this.requestRecoveryTimer = null;
+      }
+    }
+
+    _scheduleRequestRecovery(delay, scope) {
+      this._cancelRequestRecovery();
+      if (this.pendingRequest && this._scopeMatches(scope)) {
+        this.requestRecoveryTimer = this.win.setTimeout(() => void this._recoverRequest(scope), delay);
+      }
+    }
+
+    _releaseRequest() {
+      const request = this.pendingRequest;
+      if (request && this.controller.pendingRequests.get(request.document_id) === request) {
+        this.controller.pendingRequests.delete(request.document_id);
+      }
+      this.pendingRequest = null;
+      this.requestCursorId = null;
+      this._cancelRequestRecovery();
+    }
+
+    _preserveUnknownRequest(scope) {
+      const request = this.pendingRequest;
+      if (!request || !this._scopeMatches(scope)) {
+        return;
+      }
+      request.status = "unknown";
+      this.streaming = false;
+      this.sending = false;
+      this._cancelPoll();
+      if (request.message || request.images.length) {
+        this.input.value = request.message;
+        this.images = request.images;
+        request.inputCleared = false;
+        this._renderImages();
+      }
+      this._setStatus("warning", this.strings.submissionUnknown);
+      this._updateControls();
+      this._scheduleRequestRecovery(3000, scope);
+    }
+
+    async _recoverRequest(scope) {
+      this._cancelRequestRecovery();
+      const request = this.pendingRequest;
+      if (!request || !this._scopeMatches(scope)) {
+        return;
+      }
+      if (this.recoveringRequest) {
+        this._scheduleRequestRecovery(500, scope);
+        return;
+      }
+      this.recoveringRequest = true;
+      this._updateControls();
+      try {
+        const record = await this.controller.bridgeRequest(
+          "GET",
+          `/assistant/session/requests/${encodeURIComponent(request.request_id)}`,
+          null,
+          { timeoutMs: 10000 },
+        );
+        if (!this._scopeMatches(scope) || request !== this.pendingRequest) {
+          return;
+        }
+        await this._applyRequestRecord(record, scope);
+      } catch (error) {
+        if (this._scopeMatches(scope) && request === this.pendingRequest) {
+          this._preserveUnknownRequest(scope);
+          this.controller.log("error", "pi_chat_submission_recovery_failed", error);
+        }
+      } finally {
+        this.recoveringRequest = false;
+        if (this._scopeMatches(scope)) {
+          this._updateControls();
+          if (this.pendingRequest && this.pendingRequest.status === "unknown") {
+            await this._applyPendingSelection();
+          }
+        }
+      }
+    }
+
+    async _applyRequestRecord(record, scope) {
+      const request = this.pendingRequest;
+      if (!request || !this._scopeMatches(scope)) {
+        return;
+      }
+      if (!record || record.request_id !== request.request_id || !requestSessionMatches(record, request)) {
+        this._preserveUnknownRequest(scope);
+        return;
+      }
+      request.status = record.status;
+      this.sending = false;
+      if (record.status === "unknown") {
+        this._preserveUnknownRequest(scope);
+        return;
+      }
+      if (record.status === "pending") {
+        this.streaming = false;
+        this._setStatus("working", this.strings.submitting);
+        this._scheduleRequestRecovery(1000, scope);
+        this._updateControls();
+        return;
+      }
+      if (record.status === "rejected") {
+        this.streaming = false;
+        this.activeQuestion = null;
+        this._releaseRequest();
+        this._showError(record.error || new Error(this.strings.bridgeError));
+        this._updateControls();
+        await this._applyPendingSelection();
+        return;
+      }
+      if (!["accepted", "completed", "handled", "aborted"].includes(record.status)) {
+        throw new Error("Unsupported submission status");
+      }
+      const status = await this.controller.bridgeRequest("GET", "/assistant/session/status");
+      if (!this._scopeMatches(scope) || request !== this.pendingRequest) {
+        return;
+      }
+      if (!requestSessionMatches(status.session, request)) {
+        if (record.status === "accepted") {
+          this._preserveUnknownRequest(scope);
+          return;
+        }
+        this._releaseRequest();
+        this.sessionOpen = false;
+        this.streaming = false;
+        this._setStatus("warning", this.strings.sessionChanged);
+        this._updateControls();
+        return;
+      }
+      if (record.status !== "aborted") {
+        this.input.value = "";
+        this.images = [];
+        request.inputCleared = true;
+        this._renderImages();
+      }
+      if (record.context_injected) {
+        this.contextInjectionRequired = false;
+        this.contextUpdated = false;
+      }
+      const eventCursor = Number(record.event_cursor);
+      if (this.requestCursorId !== request.request_id && Number.isInteger(eventCursor) && eventCursor >= 0) {
+        this.cursor = eventCursor;
+        this.requestCursorId = request.request_id;
+      }
+      this._cancelRequestRecovery();
+      if (record.status === "accepted") {
+        this.streaming = true;
+        this.promptStarted = true;
+        this._setStatus("working", this.strings.thinking);
+        this._beginPoll(scope);
+      } else {
+        this.streaming = false;
+        this.promptStarted = false;
+        this.currentAssistant = null;
+        this.activeQuestion = null;
+        this._cancelPoll();
+        await this._loadMessages(scope);
+        if (!this._scopeMatches(scope) || request !== this.pendingRequest) {
+          return;
+        }
+        this._releaseRequest();
+        this._setStatus("ready", record.status === "aborted" ? this.strings.stopped : this.strings.opened);
+        await this._applyPendingSelection();
+      }
+      this._updateControls();
     }
 
     _beginPoll(scope) {
@@ -1448,6 +1711,10 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         if (!this._scopeMatches(scope)) {
           return;
         }
+        if (!requestSessionMatches(response, this.pendingRequest)) {
+          this._preserveUnknownRequest(scope);
+          return;
+        }
         this.cursor = Number(response.last_cursor) || this.cursor;
         if (response.cursor_expired) {
           await this._loadMessages(scope);
@@ -1458,6 +1725,14 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         }
         let settled = false;
         for (const event of response.events || []) {
+          if (!requestSessionMatches(event, this.pendingRequest)) {
+            this._preserveUnknownRequest(scope);
+            return;
+          }
+          if (event.type !== "bridge_pi_error" && event.request_id !== this.pendingRequest.request_id) {
+            await this._recoverRequest(scope);
+            return;
+          }
           if (event.type === "message_update") {
             const update = event.assistantMessageEvent || {};
             if (update.type === "text_delta" && typeof update.delta === "string") {
@@ -1482,22 +1757,16 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           if (!this._scopeMatches(scope)) {
             return;
           }
-          if (!status.session || !status.session.streaming) {
+          if (!requestSessionMatches(status.session, this.pendingRequest)) {
+            this._preserveUnknownRequest(scope);
+            return;
+          }
+          if (!status.session.streaming) {
             settled = true;
           }
         }
         if (settled) {
-          this.streaming = false;
-          this.promptStarted = false;
-          this.currentAssistant = null;
-          this.activeQuestion = null;
-          await this._loadMessages(scope);
-          if (!this._scopeMatches(scope)) {
-            return;
-          }
-          this._setStatus("ready", this.strings.opened);
-          this._updateControls();
-          await this._applyPendingSelection();
+          await this._recoverRequest(scope);
           return;
         }
         this._schedulePoll(Math.max(100, Number(response.poll_interval_ms) || this.pollIntervalMs), scope);
@@ -1505,14 +1774,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         if (!this._scopeMatches(scope)) {
           return;
         }
-        this.streaming = false;
-        this.promptStarted = false;
-        this.currentAssistant = null;
-        this.activeQuestion = null;
         this._cancelPoll();
-        this._showError(error);
-        this._updateControls();
-        await this._applyPendingSelection();
+        this._preserveUnknownRequest(scope);
+        this.controller.log("error", "pi_chat_event_recovery_failed", error);
       }
     }
 
@@ -1521,29 +1785,32 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         return;
       }
       const scope = this._captureScope();
+      const request = this.pendingRequest;
+      if (!request) {
+        return;
+      }
+      this.sending = true;
       this.stopButton.disabled = true;
       try {
-        await this.controller.bridgeRequest("POST", "/assistant/session/abort");
+        await this.controller.bridgeRequest("POST", "/assistant/session/abort", {
+          request_id: request.request_id,
+          instance_id: request.instance_id,
+          generation: request.generation,
+          document_id: request.document_id,
+        }, { timeoutMs: 30000 });
         if (!this._scopeMatches(scope)) {
           return;
         }
-        this.streaming = false;
-        this.promptStarted = false;
-        this.currentAssistant = null;
-        this.activeQuestion = null;
         this._cancelPoll();
-        await this._loadMessages(scope);
-        if (!this._scopeMatches(scope)) {
-          return;
-        }
-        this._setStatus("ready", this.strings.stopped);
-        await this._applyPendingSelection();
+        await this._recoverRequest(scope);
       } catch (error) {
         if (this._scopeMatches(scope)) {
-          this._showError(error);
+          this._preserveUnknownRequest(scope);
+          await this._recoverRequest(scope);
         }
       } finally {
         if (this._scopeMatches(scope)) {
+          this.sending = false;
           this._updateControls();
         }
       }
@@ -1558,7 +1825,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         !canSaveSnapshot({
           sessionOpen: this.sessionOpen,
           streaming: this.streaming,
-          sending: this.sending,
+          sending: this.sending || Boolean(this.pendingRequest),
           answer,
           finalScope: this.lastFinalScope,
           currentScope: scope,
@@ -1576,6 +1843,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
         !this._scopeMatches(scope)
         || this.streaming
         || this.sending
+        || this.pendingRequest
         || answer !== this.lastFinalAnswer
         || question !== this.lastFinalQuestion
         || !documentsEqual(document, this.sessionIdentity)
@@ -1645,7 +1913,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           attachment_key: document.attachmentKey,
           context_fingerprint: document.contextFingerprint,
           document_id: document.documentId,
-        });
+        }, { timeoutMs: 30000 });
         this.experienceJobId = String(response.job_id || "");
         this.experienceJobScope = { ...scope };
         if (!this.experienceJobId) {
@@ -1743,19 +2011,31 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     }
 
     async reset() {
-      if (!this.sessionOpen || this.streaming || this.disposed) {
+      if (!this.sessionOpen || this.streaming || this.sending || this.disposed || (
+        this.pendingRequest && this.pendingRequest.status !== "unknown"
+      )) {
         return;
       }
       if (!this.win.confirm(this.strings.resetConfirm)) {
         return;
       }
       this.sessionGeneration += 1;
+      this._cancelRequestRecovery();
       const scope = this._captureScope();
       this.sending = true;
       this._setStatus("working", this.strings.opening);
       this._updateControls();
       try {
-        const response = await this.controller.bridgeRequest("POST", "/assistant/session/reset");
+        if (this.pendingRequest) {
+          await this.controller.bridgeRequest("POST", "/assistant/session/open", {
+            item_key: this.selection.itemKey,
+            attachment_key: this.selection.attachmentKey,
+          }, { timeoutMs: 60000 });
+          if (!this._scopeMatches(scope)) {
+            return;
+          }
+        }
+        const response = await this.controller.bridgeRequest("POST", "/assistant/session/reset", null, { timeoutMs: 60000 });
         if (!this._scopeMatches(scope)) {
           return;
         }
@@ -1768,7 +2048,15 @@ var ZoteroAgentBridgePiChatPanel = (() => {
           attachmentKey: this.selection.attachmentKey,
           contextFingerprint: String(resetContext.fingerprint || "").toLowerCase(),
           documentId: String(response.session && response.session.document_id || "").toLowerCase(),
+          instanceId: String(response.session && response.session.instance_id || ""),
+          generation: Number(response.session && response.session.generation),
         };
+        if (this.pendingRequest) {
+          this._releaseRequest();
+          this.input.value = "";
+          this.images = [];
+          this._renderImages();
+        }
         this.contextInjectionRequired = Boolean(response.context_injection_required);
         this.contextUpdated = Boolean(response.context_updated);
         this.activeQuestion = null;
@@ -1790,6 +2078,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       } catch (error) {
         if (this._scopeMatches(scope)) {
           this._showError(error);
+          if (this.pendingRequest) {
+            this._scheduleRequestRecovery(1000, scope);
+          }
         }
       } finally {
         if (this._scopeMatches(scope)) {
@@ -1800,7 +2091,9 @@ var ZoteroAgentBridgePiChatPanel = (() => {
     }
 
     async _applyPendingSelection() {
-      if (!this.hasPendingSelection || this.streaming) {
+      if (!this.hasPendingSelection || this.streaming || this.sending || (
+        this.pendingRequest && this.pendingRequest.status !== "unknown"
+      )) {
         return;
       }
       const selection = this.pendingSelection;
@@ -1827,6 +2120,7 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.selectionGeneration += 1;
       this.sessionGeneration += 1;
       this._cancelPoll();
+      this._cancelRequestRecovery();
       if (this.experiencePollTimer !== null) {
         this.win.clearTimeout(this.experiencePollTimer);
         this.experiencePollTimer = null;
@@ -1855,6 +2149,8 @@ var ZoteroAgentBridgePiChatPanel = (() => {
       this.Zotero = options.Zotero;
       this.rootURI = options.rootURI;
       this.bridgeRequest = options.bridgeRequest;
+      this.createRequestId = options.createRequestId;
+      this.pendingRequests = new Map();
       this.appendLog = options.appendLog;
       this.markdownRenderer = options.markdownRenderer || null;
       this.fileExists = typeof options.fileExists === "function" ? options.fileExists : async () => false;
