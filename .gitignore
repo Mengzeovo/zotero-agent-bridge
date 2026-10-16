@@ -13,3 +13,6 @@ dist/obsidian-zotero-agent-bridge/
 dist/bridge/
 dist/zotero-agent-bridge-addon-*.xpi
 *.egg-info/
+.artifact-work/
+/docs/Zotero_Pi_Assistant_使用指南.docx
+/docs/~$Zotero_Pi_Assistant_使用指南.docx
